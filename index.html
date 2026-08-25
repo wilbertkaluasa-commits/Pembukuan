@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<title>Buku Untung</title>
+<meta name="description" content="Catatan stok & keuntungan usaha kamu" />
+
+<!-- PWA -->
+<link rel="manifest" href="./manifest.webmanifest" />
+<meta name="theme-color" content="#1F3A2E" />
+<link rel="icon" href="./icon-192.png" />
+<link rel="apple-touch-icon" href="./icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Buku Untung" />
+<meta name="mobile-web-app-capable" content="yes" />
+
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Inter:wght@400;500;600;700;800&display=swap');
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body, #root { height: 100%; margin: 0; }
+  body { font-family: 'Inter', sans-serif; overscroll-behavior: none; }
+  .font-ledger { font-family: 'Space Mono', monospace; font-variant-numeric: tabular-nums; }
+</style>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useCallback } = React;
+
+/* ---------- local storage bridge (replaces Claude artifact window.storage) ---------- */
+const storage = {
+  get: async (key) => {
+    const v = localStorage.getItem(key);
+    return v === null ? null : { key, value: v };
+  },
+  set: async (key, value) => {
+    try {
+      localStorage.setItem(key, value);
+      return { key, value };
+    } catch (e) {
+      return null;
+    }
+  },
+};
+
+/* ---------- theme ---------- */
+const THEME = {
+  paper: "#E9EEE2",
+  card: "#F8F7F0",
+  ink: "#1F3A2E",
+  inkDark: "#16281F",
+  gold: "#C89B3C",
+  goldDark: "#9C7A29",
+  red: "#B33F3F",
+  redSoft: "#F3E2E0",
+  text: "#24291F",
+  muted: "#647062",
+  line: "rgba(31,58,46,0.16)",
+};
+
+const LOW_STOCK = 5;
+const money = (n) => "Rp" + Math.round(n || 0).toLocaleString("id-ID");
+const todayISO = () => new Date().toISOString();
+const sameMonth = (iso) => {
+  const d = new Date(iso);
+  const now = new Date();
+  return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+};
+const fmtDate = (iso) =>
+  new Date(iso).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" });
+const fmtTime = (iso) =>
+  new Date(iso).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+function LedgerCard({ children, style, className = "" }) {
+  return (
+    <div
+      className={`rounded-2xl shadow-sm ${className}`}
+      style={{ background: THEME.card, border: `1px solid ${THEME.line}`, borderRadius: 16, ...style }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function Stamp({ text }) {
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        fontSize: 11,
+        fontWeight: 700,
+        padding: "2px 8px",
+        borderRadius: 3,
+        color: THEME.ink,
+        border: `1.5px solid ${THEME.ink}`,
+        transform: "rotate(-4deg)",
+        fontFamily: "'Space Mono', monospace",
+        letterSpacing: "0.05em",
+      }}
+    >
+      {text}
+    </span>
+  );
+}
+
+function App() {
+  const [ready, setReady] = useState(false);
+  const [products, setProducts] = useState([]);
+  const [transactions, setTransactions] = useState([]);
+  const [tab, setTab] = useState("dashboard");
+  const [productModal, setProductModal] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [search, setSearch] = useState("");
+  const [saveError, setSaveError] = useState("");
+
+  const [saleProductId, setSaleProductId] = useState("");
+  const [saleQty, setSaleQty] = useState("1");
+  const [saleCustomer, setSaleCustomer] = useState("");
+  const [saleError, setSaleError] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        let p = [];
+        let t = [];
+        try {
+          const r = await storage.get("products");
+          if (r?.value) p = JSON.parse(r.value);
+        } catch (e) {}
+        try {
+          const r = await storage.get("transactions");
+          if (r?.value) t = JSON.parse(r.value);
+        } catch (e) {}
+        setProducts(p);
+        setTransactions(t);
+      } finally {
+        setReady(true);
+      }
+    })();
+
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("./sw.js").catch(() => {});
+    }
+  }, []);
+
+  const persist = useCallback(async (key, value) => {
+    const res = await storage.set(key, JSON.stringify(value));
+    setSaveError(res ? "" : "Gagal menyimpan data. Coba lagi.");
+  }, []);
+
+  const saveProducts = (next) => { setProducts(next); persist("products", next); };
+  const saveTransactions = (next) => { setTransactions(next); persist("transactions", next); };
+
+  const monthTx = transactions.filter((t) => sameMonth(t.date));
+  const monthProfit = monthTx.reduce((s, t) => s + t.profit, 0);
+  const monthQty = monthTx.reduce((s, t) => s + t.qty, 0);
+  const stockValue = products.reduce((s, p) => s + p.buyPrice * p.stock, 0);
+  const lowStock = products.filter((p) => p.stock <= LOW_STOCK);
+  const filteredProducts = products.filter((p) => p.name.toLowerCase().includes(search.toLowerCase()));
+  const sellableProducts = products.filter((p) => p.stock > 0);
+  const selectedProduct = products.find((p) => p.id === saleProductId);
+  const qtyNum = parseInt(saleQty, 10) || 0;
+  const previewTotal = selectedProduct ? selectedProduct.sellPrice * qtyNum : 0;
+  const previewProfit = selectedProduct ? (selectedProduct.sellPrice - selectedProduct.buyPrice) * qtyNum : 0;
+
+  function upsertProduct(data) {
+    if (data.id) {
+      saveProducts(products.map((p) => (p.id === data.id ? { ...p, ...data } : p)));
+    } else {
+      saveProducts([{ ...data, id: uid() }, ...products]);
+    }
+    setProductModal(null);
+  }
+
+  function deleteProduct(id) {
+    saveProducts(products.filter((p) => p.id !== id));
+    setConfirmDelete(null);
+  }
+
+  function recordSale() {
+    setSaleError("");
+    if (!selectedProduct) return setSaleError("Pilih produk dulu.");
+    if (qtyNum <= 0) return setSaleError("Jumlah harus lebih dari 0.");
+    if (qtyNum > selectedProduct.stock) return setSaleError(`Stok tidak cukup. Sisa stok: ${selectedProduct.stock}.`);
+    const tx = {
+      id: uid(),
+      productId: selectedProduct.id,
+      productName: selectedProduct.name,
+      customer: saleCustomer.trim(),
+      qty: qtyNum,
+      buyPrice: selectedProduct.buyPrice,
+      sellPrice: selectedProduct.sellPrice,
+      total: selectedProduct.sellPrice * qtyNum,
+      profit: (selectedProduct.sellPrice - selectedProduct.buyPrice) * qtyNum,
+      date: todayISO(),
+    };
+    saveTransactions([tx, ...transactions]);
+    saveProducts(products.map((p) => (p.id === selectedProduct.id ? { ...p, stock: p.stock - qtyNum } : p)));
+    setSaleProductId("");
+    setSaleQty("1");
+    setSaleCustomer("");
+    setTab("dashboard");
+  }
+
+  function deleteTransaction(tx) {
+    saveTransactions(transactions.filter((t) => t.id !== tx.id));
+    saveProducts(products.map((p) => (p.id === tx.productId ? { ...p, stock: p.stock + tx.qty } : p)));
+    setConfirmDelete(null);
+  }
+
+  if (!ready) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: THEME.paper, color: THEME.ink }}>
+        <span style={{ fontSize: 14, color: THEME.muted }}>Membuka buku catatan…</span>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", background: THEME.paper, color: THEME.text, display: "flex", flexDirection: "column" }}>
+      <div style={{ padding: "24px 20px 20px", borderBottomLeftRadius: 24, borderBottomRightRadius: 24, boxShadow: "0 4px 10px rgba(0,0,0,0.08)", background: `linear-gradient(160deg, ${THEME.ink}, ${THEME.inkDark})` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ width: 36, height: 36, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.12)", color: THEME.gold, fontSize: 18 }}>💰</div>
+          <div>
+            <h1 style={{ fontSize: 18, fontWeight: 700, color: "white", margin: 0, lineHeight: 1.2 }}>Buku Untung</h1>
+            <p style={{ fontSize: 12, color: "rgba(255,255,255,0.6)", margin: 0 }}>Catatan stok & keuntungan</p>
+          </div>
+        </div>
+      </div>
+
+      {saveError && (
+        <div style={{ margin: "12px 20px 0", padding: "8px 12px", borderRadius: 10, fontSize: 12, fontWeight: 500, background: THEME.redSoft, color: THEME.red }}>
+          {saveError}
+        </div>
+      )}
+
+      <div style={{ flex: 1, padding: "16px 20px 96px", overflowY: "auto" }}>
+        {tab === "dashboard" && (
+          <Dashboard monthProfit={monthProfit} monthQty={monthQty} stockValue={stockValue} productCount={products.length}
+            lowStock={lowStock} recent={transactions.slice(0, 3)} onSeeAll={() => setTab("riwayat")} onGoStok={() => setTab("stok")} />
+        )}
+        {tab === "stok" && (
+          <StokTab products={filteredProducts} search={search} setSearch={setSearch} onAdd={() => setProductModal("new")}
+            onEdit={(p) => setProductModal(p)} onDelete={(p) => setConfirmDelete({ type: "product", id: p.id, name: p.name })} />
+        )}
+        {tab === "transaksi" && (
+          <TransaksiTab products={sellableProducts} allEmpty={products.length === 0} saleProductId={saleProductId}
+            setSaleProductId={setSaleProductId} saleQty={saleQty} setSaleQty={setSaleQty}
+            saleCustomer={saleCustomer} setSaleCustomer={setSaleCustomer} saleError={saleError}
+            previewTotal={previewTotal} previewProfit={previewProfit} onSubmit={recordSale} onGoStok={() => setTab("stok")} />
+        )}
+        {tab === "riwayat" && (
+          <RiwayatTab transactions={transactions} onDelete={(tx) => setConfirmDelete({ type: "transaction", id: tx.id, name: tx.productName, tx })} />
+        )}
+      </div>
+
+      <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, display: "grid", gridTemplateColumns: "repeat(4,1fr)", padding: "8px 8px calc(8px + env(safe-area-inset-bottom))", gap: 4, background: THEME.card, borderTop: `1px solid ${THEME.line}`, boxShadow: "0 -4px 12px rgba(0,0,0,0.06)" }}>
+        <NavBtn active={tab === "dashboard"} icon="📊" label="Ringkasan" onClick={() => setTab("dashboard")} />
+        <NavBtn active={tab === "stok"} icon="📦" label="Stok" onClick={() => setTab("stok")} />
+        <NavBtn active={tab === "transaksi"} icon="🧾" label="Catat Jual" onClick={() => setTab("transaksi")} />
+        <NavBtn active={tab === "riwayat"} icon="🕒" label="Riwayat" onClick={() => setTab("riwayat")} />
+      </div>
+
+      {productModal && <ProductModal initial={productModal === "new" ? null : productModal} onClose={() => setProductModal(null)} onSave={upsertProduct} />}
+      {confirmDelete && (
+        <ConfirmModal
+          title={confirmDelete.type === "product" ? "Hapus produk?" : "Hapus transaksi?"}
+          message={confirmDelete.type === "product" ? `"${confirmDelete.name}" akan dihapus dari daftar stok.` : `Transaksi "${confirmDelete.name}" akan dihapus dan stoknya dikembalikan.`}
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={() => (confirmDelete.type === "product" ? deleteProduct(confirmDelete.id) : deleteTransaction(confirmDelete.tx))}
+        />
+      )}
+    </div>
+  );
+}
+
+function NavBtn({ active, icon, label, onClick }) {
+  return (
+    <button onClick={onClick} style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, padding: "6px 0", borderRadius: 12, border: "none", background: active ? THEME.ink : "transparent", color: active ? "white" : THEME.muted, cursor: "pointer" }}>
+      <span style={{ fontSize: 16 }}>{icon}</span>
+      <span style={{ fontSize: 10, fontWeight: 500 }}>{label}</span>
+    </button>
+  );
+}
+
+function Dashboard({ monthProfit, monthQty, stockValue, productCount, lowStock, recent, onSeeAll, onGoStok }) {
+  const monthLabel = new Date().toLocaleDateString("id-ID", { month: "long", year: "numeric" });
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <LedgerCard style={{
+        padding: 20, background: THEME.ink,
+        backgroundImage: "repeating-linear-gradient(to bottom, transparent 0px, transparent 27px, rgba(255,255,255,0.06) 28px)"
+      }}>
+        <p style={{ fontSize: 12, fontWeight: 500, marginBottom: 4, color: "rgba(255,255,255,0.65)" }}>Keuntungan · {monthLabel}</p>
+        <p className="font-ledger" style={{ fontWeight: 700, fontSize: 30, color: THEME.gold, margin: 0 }}>{money(monthProfit)}</p>
+        <p style={{ fontSize: 12, marginTop: 4, color: "rgba(255,255,255,0.55)" }}>{monthQty} item terjual bulan ini</p>
+      </LedgerCard>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <LedgerCard style={{ padding: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, color: THEME.muted, fontSize: 12, fontWeight: 500 }}>📦 Nilai Stok</div>
+          <p className="font-ledger" style={{ fontWeight: 700, fontSize: 18, color: THEME.ink, margin: 0 }}>{money(stockValue)}</p>
+        </LedgerCard>
+        <LedgerCard style={{ padding: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, color: THEME.muted, fontSize: 12, fontWeight: 500 }}>🗂️ Total Produk</div>
+          <p className="font-ledger" style={{ fontWeight: 700, fontSize: 18, color: THEME.ink, margin: 0 }}>{productCount}</p>
+        </LedgerCard>
+      </div>
+
+      {lowStock.length > 0 && (
+        <LedgerCard style={{ padding: 16, borderLeft: `4px solid ${THEME.red}` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, color: THEME.red, fontSize: 14, fontWeight: 600 }}>⚠️ Stok menipis</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {lowStock.slice(0, 4).map((p) => (
+              <div key={p.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 14 }}>
+                <span>{p.name}</span>
+                <span className="font-ledger" style={{ fontWeight: 700 }}>{p.stock} sisa</span>
+              </div>
+            ))}
+          </div>
+          <button onClick={onGoStok} style={{ marginTop: 8, fontSize: 12, fontWeight: 600, background: "none", border: "none", color: THEME.ink, cursor: "pointer", padding: 0 }}>
+            Kelola stok →
+          </button>
+        </LedgerCard>
+      )}
+
+      <div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+          <h2 style={{ fontSize: 14, fontWeight: 600, color: THEME.ink, margin: 0 }}>Transaksi terbaru</h2>
+          {recent.length > 0 && (
+            <button onClick={onSeeAll} style={{ fontSize: 12, fontWeight: 500, background: "none", border: "none", color: THEME.goldDark, cursor: "pointer" }}>Lihat semua →</button>
+          )}
+        </div>
+        {recent.length === 0 ? (
+          <LedgerCard style={{ padding: 20, textAlign: "center" }}>
+            <p style={{ fontSize: 14, color: THEME.muted, margin: 0 }}>Belum ada transaksi. Catat penjualan pertamamu di tab "Catat Jual".</p>
+          </LedgerCard>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {recent.map((t) => <TxRow key={t.id} tx={t} />)}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TxRow({ tx, onDelete }) {
+  return (
+    <LedgerCard style={{ padding: 14, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <div>
+        <p style={{ fontSize: 14, fontWeight: 600, color: THEME.ink, margin: 0 }}>{tx.productName}</p>
+        <p style={{ fontSize: 12, color: THEME.muted, margin: 0 }}>{tx.qty} pcs · {fmtDate(tx.date)}, {fmtTime(tx.date)}</p>
+        {tx.customer && (
+          <p style={{ fontSize: 12, color: THEME.goldDark, margin: "2px 0 0" }}>Pemesan: {tx.customer}</p>
+        )}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ textAlign: "right" }}>
+          <p className="font-ledger" style={{ fontWeight: 700, fontSize: 14, color: THEME.gold, margin: 0 }}>+{money(tx.profit)}</p>
+          <p style={{ fontSize: 11, color: THEME.muted, margin: 0 }}>{money(tx.total)}</p>
+        </div>
+        {onDelete && (
+          <button onClick={onDelete} style={{ padding: 6, borderRadius: 8, border: "none", background: "none", color: THEME.muted, cursor: "pointer" }}>🗑️</button>
+        )}
+      </div>
+    </LedgerCard>
+  );
+}
+
+function StokTab({ products, search, setSearch, onAdd, onEdit, onDelete }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, padding: "0 12px", borderRadius: 12, background: THEME.card, border: `1px solid ${THEME.line}` }}>
+          <span>🔍</span>
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Cari produk…"
+            style={{ flex: 1, padding: "10px 0", background: "transparent", border: "none", fontSize: 14, outline: "none", color: THEME.text }} />
+        </div>
+        <button onClick={onAdd} style={{ width: 44, height: 44, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", border: "none", background: THEME.ink, color: "white", fontSize: 20, cursor: "pointer", flexShrink: 0 }}>+</button>
+      </div>
+
+      {products.length === 0 ? (
+        <LedgerCard style={{ padding: 24, textAlign: "center", marginTop: 8 }}>
+          <p style={{ fontSize: 14, fontWeight: 600, color: THEME.ink, margin: "0 0 4px" }}>Belum ada produk</p>
+          <p style={{ fontSize: 12, color: THEME.muted, margin: 0 }}>Tambahkan produk pertamamu untuk mulai mencatat stok.</p>
+        </LedgerCard>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {products.map((p) => {
+            const low = p.stock <= LOW_STOCK;
+            const margin = p.sellPrice - p.buyPrice;
+            return (
+              <LedgerCard key={p.id} style={{ padding: 14 }}>
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ fontSize: 14, fontWeight: 600, color: THEME.ink, margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</p>
+                    <p style={{ fontSize: 12, marginTop: 2, color: THEME.muted, margin: "2px 0 0" }}>Beli {money(p.buyPrice)} → Jual {money(p.sellPrice)}</p>
+                    <p style={{ fontSize: 12, color: THEME.goldDark, margin: 0 }}>Margin {money(margin)} / pcs</p>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, marginLeft: 8, flexShrink: 0 }}>
+                    <span className="font-ledger" style={{ fontSize: 12, fontWeight: 700, padding: "4px 8px", borderRadius: 6, background: low ? THEME.redSoft : THEME.paper, color: low ? THEME.red : THEME.ink }}>{p.stock} stok</span>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <button onClick={() => onEdit(p)} style={{ padding: 6, borderRadius: 8, border: "none", background: "none", color: THEME.muted, cursor: "pointer" }}>✏️</button>
+                      <button onClick={() => onDelete(p)} style={{ padding: 6, borderRadius: 8, border: "none", background: "none", color: THEME.muted, cursor: "pointer" }}>🗑️</button>
+                    </div>
+                  </div>
+                </div>
+              </LedgerCard>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TransaksiTab({ products, allEmpty, saleProductId, setSaleProductId, saleQty, setSaleQty, saleCustomer, setSaleCustomer, saleError, previewTotal, previewProfit, onSubmit, onGoStok }) {
+  if (allEmpty) {
+    return (
+      <LedgerCard style={{ padding: 24, textAlign: "center", marginTop: 8 }}>
+        <p style={{ fontSize: 14, fontWeight: 600, color: THEME.ink, margin: "0 0 4px" }}>Belum ada produk untuk dijual</p>
+        <p style={{ fontSize: 12, color: THEME.muted, margin: "0 0 12px" }}>Tambahkan produk dulu di tab Stok.</p>
+        <button onClick={onGoStok} style={{ fontSize: 14, fontWeight: 600, padding: "8px 16px", borderRadius: 12, border: "none", background: THEME.ink, color: "white", cursor: "pointer" }}>Ke tab Stok</button>
+      </LedgerCard>
+    );
+  }
+  if (products.length === 0) {
+    return (
+      <LedgerCard style={{ padding: 24, textAlign: "center", marginTop: 8 }}>
+        <p style={{ fontSize: 14, fontWeight: 600, color: THEME.ink, margin: "0 0 4px" }}>Semua produk stoknya habis</p>
+        <p style={{ fontSize: 12, color: THEME.muted, margin: 0 }}>Tambah stok dulu sebelum mencatat penjualan.</p>
+      </LedgerCard>
+    );
+  }
+  return (
+    <LedgerCard style={{ padding: 16 }}>
+      <h2 style={{ fontSize: 14, fontWeight: 600, color: THEME.ink, margin: "0 0 12px" }}>Catat Penjualan</h2>
+      <label style={{ fontSize: 12, fontWeight: 500, display: "block", marginBottom: 4, color: THEME.muted }}>Produk</label>
+      <select value={saleProductId} onChange={(e) => setSaleProductId(e.target.value)}
+        style={{ width: "100%", padding: "10px 12px", borderRadius: 12, fontSize: 14, marginBottom: 12, background: THEME.paper, border: `1px solid ${THEME.line}`, color: THEME.text }}>
+        <option value="">Pilih produk…</option>
+        {products.map((p) => <option key={p.id} value={p.id}>{p.name} (stok {p.stock})</option>)}
+      </select>
+
+      <label style={{ fontSize: 12, fontWeight: 500, display: "block", marginBottom: 4, color: THEME.muted }}>Jumlah terjual</label>
+      <input type="number" min="1" value={saleQty} onChange={(e) => setSaleQty(e.target.value)}
+        className="font-ledger" style={{ width: "100%", padding: "10px 12px", borderRadius: 12, fontSize: 14, marginBottom: 12, background: THEME.paper, border: `1px solid ${THEME.line}`, color: THEME.text }} />
+
+      <label style={{ fontSize: 12, fontWeight: 500, display: "block", marginBottom: 4, color: THEME.muted }}>Nama pemesan (opsional)</label>
+      <input type="text" value={saleCustomer} onChange={(e) => setSaleCustomer(e.target.value)} placeholder="Contoh: Bu Sari"
+        style={{ width: "100%", padding: "10px 12px", borderRadius: 12, fontSize: 14, marginBottom: 12, background: THEME.paper, border: `1px solid ${THEME.line}`, color: THEME.text }} />
+
+      {saleProductId && (
+        <div style={{ borderRadius: 12, padding: 12, marginBottom: 12, background: THEME.paper }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, marginBottom: 4 }}>
+            <span style={{ color: THEME.muted }}>Total penjualan</span>
+            <span className="font-ledger" style={{ fontWeight: 600 }}>{money(previewTotal)}</span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14 }}>
+            <span style={{ color: THEME.muted }}>Keuntungan</span>
+            <span className="font-ledger" style={{ fontWeight: 700, color: THEME.goldDark }}>{money(previewProfit)}</span>
+          </div>
+        </div>
+      )}
+
+      {saleError && <p style={{ fontSize: 12, fontWeight: 500, marginBottom: 12, color: THEME.red }}>{saleError}</p>}
+
+      <button onClick={onSubmit} style={{ width: "100%", padding: 12, borderRadius: 12, fontSize: 14, fontWeight: 600, border: "none", background: THEME.ink, color: "white", cursor: "pointer" }}>Simpan Transaksi</button>
+    </LedgerCard>
+  );
+}
+
+function RiwayatTab({ transactions, onDelete }) {
+  if (transactions.length === 0) {
+    return (
+      <LedgerCard style={{ padding: 24, textAlign: "center", marginTop: 8 }}>
+        <p style={{ fontSize: 14, fontWeight: 600, color: THEME.ink, margin: 0 }}>Belum ada riwayat transaksi</p>
+      </LedgerCard>
+    );
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 4 }}><Stamp text="RIWAYAT" /></div>
+      {transactions.map((t) => <TxRow key={t.id} tx={t} onDelete={() => onDelete(t)} />)}
+    </div>
+  );
+}
+
+function ProductModal({ initial, onClose, onSave }) {
+  const [name, setName] = useState(initial?.name || "");
+  const [buyPrice, setBuyPrice] = useState(initial?.buyPrice?.toString() || "");
+  const [sellPrice, setSellPrice] = useState(initial?.sellPrice?.toString() || "");
+  const [stock, setStock] = useState(initial?.stock?.toString() || "");
+  const [error, setError] = useState("");
+
+  function submit() {
+    if (!name.trim()) return setError("Nama produk wajib diisi.");
+    const bp = parseFloat(buyPrice);
+    const sp = parseFloat(sellPrice);
+    const st = parseInt(stock, 10);
+    if (isNaN(bp) || bp < 0) return setError("Harga beli tidak valid.");
+    if (isNaN(sp) || sp < 0) return setError("Harga jual tidak valid.");
+    if (isNaN(st) || st < 0) return setError("Jumlah stok tidak valid.");
+    onSave({ id: initial?.id, name: name.trim(), buyPrice: bp, sellPrice: sp, stock: st });
+  }
+
+  const inputStyle = { width: "100%", padding: "10px 12px", borderRadius: 12, fontSize: 14, background: THEME.paper, border: `1px solid ${THEME.line}`, color: THEME.text, outline: "none" };
+  const labelStyle = { fontSize: 12, fontWeight: 500, display: "block", marginBottom: 4, color: THEME.muted };
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, display: "flex", alignItems: "flex-end", justifyContent: "center", background: "rgba(22,40,31,0.45)", zIndex: 50 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 480, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: "20px 20px 28px", background: THEME.card }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+          <h3 style={{ fontSize: 16, fontWeight: 700, color: THEME.ink, margin: 0 }}>{initial ? "Edit Produk" : "Tambah Produk"}</h3>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: THEME.muted, fontSize: 18, cursor: "pointer" }}>✕</button>
+        </div>
+
+        <label style={labelStyle}>Nama produk</label>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Contoh: Kopi Sachet" style={{ ...inputStyle, marginBottom: 12 }} />
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+          <div>
+            <label style={labelStyle}>Harga beli</label>
+            <input type="number" value={buyPrice} onChange={(e) => setBuyPrice(e.target.value)} placeholder="0" className="font-ledger" style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Harga jual</label>
+            <input type="number" value={sellPrice} onChange={(e) => setSellPrice(e.target.value)} placeholder="0" className="font-ledger" style={inputStyle} />
+          </div>
+        </div>
+
+        <label style={labelStyle}>Jumlah stok</label>
+        <input type="number" value={stock} onChange={(e) => setStock(e.target.value)} placeholder="0" className="font-ledger" style={{ ...inputStyle, marginBottom: 12 }} />
+
+        {error && <p style={{ fontSize: 12, fontWeight: 500, marginBottom: 12, color: THEME.red }}>{error}</p>}
+
+        <button onClick={submit} style={{ width: "100%", padding: 12, borderRadius: 12, fontSize: 14, fontWeight: 600, border: "none", background: THEME.ink, color: "white", cursor: "pointer" }}>
+          {initial ? "Simpan Perubahan" : "Tambah Produk"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmModal({ title, message, onCancel, onConfirm }) {
+  return (
+    <div onClick={onCancel} style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 24px", background: "rgba(22,40,31,0.45)", zIndex: 50 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 380, borderRadius: 16, padding: 20, background: THEME.card }}>
+        <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 6, color: THEME.ink, marginTop: 0 }}>{title}</h3>
+        <p style={{ fontSize: 14, marginBottom: 16, color: THEME.muted, marginTop: 0 }}>{message}</p>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={onCancel} style={{ flex: 1, padding: 10, borderRadius: 12, fontSize: 14, fontWeight: 600, border: "none", background: THEME.paper, color: THEME.ink, cursor: "pointer" }}>Batal</button>
+          <button onClick={onConfirm} style={{ flex: 1, padding: 10, borderRadius: 12, fontSize: 14, fontWeight: 600, border: "none", background: THEME.red, color: "white", cursor: "pointer" }}>Hapus</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
