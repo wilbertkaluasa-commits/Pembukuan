@@ -40,12 +40,12 @@ const {
 
 /* =================== KONFIGURASI SUPABASE =================== */
 /* Ganti dua nilai di bawah ini dengan Project URL dan anon public key dari Supabase-mu */
-const SUPABASE_URL = "GANTI_DENGAN_PROJECT_URL_SUPABASE";
-const SUPABASE_ANON_KEY = "GANTI_DENGAN_ANON_PUBLIC_KEY_SUPABASE";
+const SUPABASE_URL = "sb_publishable_lQ646Tr5cjYPN12xySXbRw_QuEsJGl2";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRwdG5vZWFhc2dkaWp1cnV3cnptIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc2NDgwNzksImV4cCI6MjEwMzIyNDA3OX0.-r41UT4Pkpg0c3MnxtofWiEBuVXrtVICPskRlY7d9Kg";
 /* =============================================================== */
 
 const isConfigured = SUPABASE_URL.startsWith("http") && !SUPABASE_ANON_KEY.startsWith("GANTI_");
-const supabase = isConfigured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+const supabaseClient = isConfigured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
 /* ---------- theme ---------- */
 const THEME = {
@@ -203,7 +203,7 @@ function LoginScreen() {
     setLoading(true);
     const {
       error: err
-    } = await supabase.auth.signInWithPassword({
+    } = await supabaseClient.auth.signInWithPassword({
       email: email.trim(),
       password
     });
@@ -362,9 +362,9 @@ function MainApp({
     }, {
       data: tData,
       error: tErr
-    }] = await Promise.all([supabase.from("products").select("*").order("created_at", {
+    }] = await Promise.all([supabaseClient.from("products").select("*").order("created_at", {
       ascending: false
-    }), supabase.from("transactions").select("*").order("date", {
+    }), supabaseClient.from("transactions").select("*").order("date", {
       ascending: false
     })]);
     if (pErr || tErr) setSaveError("Gagal memuat data dari database.");
@@ -391,7 +391,7 @@ function MainApp({
     if (data.id) {
       const {
         error
-      } = await supabase.from("products").update({
+      } = await supabaseClient.from("products").update({
         name: data.name,
         buy_price: data.buyPrice,
         sell_price: data.sellPrice,
@@ -409,7 +409,7 @@ function MainApp({
       };
       const {
         error
-      } = await supabase.from("products").insert(productToDbInsert(newP));
+      } = await supabaseClient.from("products").insert(productToDbInsert(newP));
       if (error) return setSaveError("Gagal menambah produk.");
       setProducts([newP, ...products]);
     }
@@ -419,7 +419,7 @@ function MainApp({
     setSaveError("");
     const {
       error
-    } = await supabase.from("products").delete().eq("id", id);
+    } = await supabaseClient.from("products").delete().eq("id", id);
     if (error) return setSaveError("Gagal menghapus produk.");
     setProducts(products.filter(p => p.id !== id));
     setConfirmDelete(null);
@@ -444,11 +444,11 @@ function MainApp({
     const newStock = selectedProduct.stock - qtyNum;
     const {
       error: txErr
-    } = await supabase.from("transactions").insert(txToDbInsert(tx));
+    } = await supabaseClient.from("transactions").insert(txToDbInsert(tx));
     if (txErr) return setSaleError("Gagal menyimpan transaksi.");
     const {
       error: pErr
-    } = await supabase.from("products").update({
+    } = await supabaseClient.from("products").update({
       stock: newStock
     }).eq("id", selectedProduct.id);
     if (pErr) setSaveError("Transaksi tersimpan, tapi gagal memperbarui stok.");
@@ -466,12 +466,12 @@ function MainApp({
     setSaveError("");
     const {
       error
-    } = await supabase.from("transactions").delete().eq("id", tx.id);
+    } = await supabaseClient.from("transactions").delete().eq("id", tx.id);
     if (error) return setSaveError("Gagal menghapus transaksi.");
     const owner = products.find(p => p.id === tx.productId);
     if (owner) {
       const restored = owner.stock + tx.qty;
-      await supabase.from("products").update({
+      await supabaseClient.from("products").update({
         stock: restored
       }).eq("id", owner.id);
       setProducts(products.map(p => p.id === owner.id ? {
@@ -554,7 +554,7 @@ function MainApp({
       margin: 0
     }
   }, session.user.email))), /*#__PURE__*/React.createElement("button", {
-    onClick: () => supabase.auth.signOut(),
+    onClick: () => supabaseClient.auth.signOut(),
     style: {
       background: "rgba(255,255,255,0.12)",
       border: "none",
@@ -1632,12 +1632,12 @@ function Root() {
 
   useEffect(() => {
     if (!isConfigured) return;
-    supabase.auth.getSession().then(({
+    supabaseClient.auth.getSession().then(({
       data
     }) => setSession(data.session));
     const {
       data: sub
-    } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
+    } = supabaseClient.auth.onAuthStateChange((_event, s) => setSession(s));
     return () => sub.subscription.unsubscribe();
   }, []);
   if (!isConfigured) return /*#__PURE__*/React.createElement(SetupNotice, null);
