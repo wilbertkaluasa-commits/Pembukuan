@@ -26,6 +26,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 </head>
 <body>
 <div id="root"></div>
@@ -37,27 +38,14 @@ const {
   useCallback
 } = React;
 
-/* ---------- local storage bridge (replaces Claude artifact window.storage) ---------- */
-const storage = {
-  get: async key => {
-    const v = localStorage.getItem(key);
-    return v === null ? null : {
-      key,
-      value: v
-    };
-  },
-  set: async (key, value) => {
-    try {
-      localStorage.setItem(key, value);
-      return {
-        key,
-        value
-      };
-    } catch (e) {
-      return null;
-    }
-  }
-};
+/* =================== KONFIGURASI SUPABASE =================== */
+/* Ganti dua nilai di bawah ini dengan Project URL dan anon public key dari Supabase-mu */
+const SUPABASE_URL = "sb_publishable_lQ646Tr5cjYPN12xySXbRw_QuEsJGl2";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRwdG5vZWFhc2dkaWp1cnV3cnptIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc2NDgwNzksImV4cCI6MjEwMzIyNDA3OX0.-r41UT4Pkpg0c3MnxtofWiEBuVXrtVICPskRlY7d9Kg";
+/* =============================================================== */
+
+const isConfigured = SUPABASE_URL.startsWith("http") && !SUPABASE_ANON_KEY.startsWith("GANTI_");
+const supabase = isConfigured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
 /* ---------- theme ---------- */
 const THEME = {
@@ -91,13 +79,59 @@ const fmtTime = iso => new Date(iso).toLocaleTimeString("id-ID", {
   minute: "2-digit"
 });
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+/* ---------- mapping DB <-> app ---------- */
+function productFromDb(r) {
+  return {
+    id: r.id,
+    name: r.name,
+    buyPrice: Number(r.buy_price),
+    sellPrice: Number(r.sell_price),
+    stock: Number(r.stock)
+  };
+}
+function productToDbInsert(p) {
+  return {
+    id: p.id,
+    name: p.name,
+    buy_price: p.buyPrice,
+    sell_price: p.sellPrice,
+    stock: p.stock
+  };
+}
+function txFromDb(r) {
+  return {
+    id: r.id,
+    productId: r.product_id,
+    productName: r.product_name,
+    customer: r.customer || "",
+    qty: Number(r.qty),
+    buyPrice: Number(r.buy_price),
+    sellPrice: Number(r.sell_price),
+    total: Number(r.total),
+    profit: Number(r.profit),
+    date: r.date
+  };
+}
+function txToDbInsert(t) {
+  return {
+    id: t.id,
+    product_id: t.productId,
+    product_name: t.productName,
+    customer: t.customer || null,
+    qty: t.qty,
+    buy_price: t.buyPrice,
+    sell_price: t.sellPrice,
+    total: t.total,
+    profit: t.profit,
+    date: t.date
+  };
+}
 function LedgerCard({
   children,
-  style,
-  className = ""
+  style
 }) {
   return /*#__PURE__*/React.createElement("div", {
-    className: `rounded-2xl shadow-sm ${className}`,
     style: {
       background: THEME.card,
       border: `1px solid ${THEME.line}`,
@@ -124,8 +158,191 @@ function Stamp({
     }
   }, text);
 }
-function App() {
-  const [ready, setReady] = useState(false);
+
+/* =================== SETUP NOTICE (kalau kredensial belum diisi) =================== */
+function SetupNotice() {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      minHeight: "100vh",
+      background: THEME.paper,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 24
+    }
+  }, /*#__PURE__*/React.createElement(LedgerCard, {
+    style: {
+      padding: 24,
+      maxWidth: 420
+    }
+  }, /*#__PURE__*/React.createElement("h2", {
+    style: {
+      fontSize: 16,
+      fontWeight: 700,
+      color: THEME.ink,
+      marginTop: 0
+    }
+  }, "Belum terhubung ke database"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 14,
+      color: THEME.muted
+    }
+  }, "Buka file index.html, cari SUPABASE_URL dan SUPABASE_ANON_KEY di bagian atas kode, lalu ganti dengan nilai dari project Supabase kamu.")));
+}
+
+/* =================== LOGIN SCREEN =================== */
+function LoginScreen() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  async function submit(e) {
+    e.preventDefault();
+    setError("");
+    if (!email.trim() || !password) return setError("Isi email dan password dulu.");
+    setLoading(true);
+    const {
+      error: err
+    } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password
+    });
+    setLoading(false);
+    if (err) setError(err.message === "Invalid login credentials" ? "Email atau password salah." : err.message);
+  }
+  const inputStyle = {
+    width: "100%",
+    padding: "12px 14px",
+    borderRadius: 12,
+    fontSize: 14,
+    background: THEME.paper,
+    border: `1px solid ${THEME.line}`,
+    color: THEME.text,
+    outline: "none"
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      minHeight: "100vh",
+      background: THEME.paper,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 24
+    }
+  }, /*#__PURE__*/React.createElement(LedgerCard, {
+    style: {
+      padding: 28,
+      width: "100%",
+      maxWidth: 380
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 36,
+      height: 36,
+      borderRadius: 10,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      background: THEME.ink,
+      color: THEME.gold,
+      fontSize: 18
+    }
+  }, "💰"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h1", {
+    style: {
+      fontSize: 17,
+      fontWeight: 700,
+      color: THEME.ink,
+      margin: 0
+    }
+  }, "Buku Untung"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: THEME.muted,
+      margin: 0
+    }
+  }, "Masuk untuk lanjut mencatat"))), /*#__PURE__*/React.createElement("form", {
+    onSubmit: submit
+  }, /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 12,
+      fontWeight: 500,
+      display: "block",
+      marginBottom: 4,
+      color: THEME.muted
+    }
+  }, "Email"), /*#__PURE__*/React.createElement("input", {
+    type: "email",
+    value: email,
+    onChange: e => setEmail(e.target.value),
+    placeholder: "nama@email.com",
+    style: {
+      ...inputStyle,
+      marginBottom: 14
+    },
+    autoComplete: "username"
+  }), /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 12,
+      fontWeight: 500,
+      display: "block",
+      marginBottom: 4,
+      color: THEME.muted
+    }
+  }, "Password"), /*#__PURE__*/React.createElement("input", {
+    type: "password",
+    value: password,
+    onChange: e => setPassword(e.target.value),
+    placeholder: "••••••••",
+    style: {
+      ...inputStyle,
+      marginBottom: 14
+    },
+    autoComplete: "current-password"
+  }), error && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      fontWeight: 500,
+      marginBottom: 14,
+      color: THEME.red
+    }
+  }, error), /*#__PURE__*/React.createElement("button", {
+    type: "submit",
+    disabled: loading,
+    style: {
+      width: "100%",
+      padding: 13,
+      borderRadius: 12,
+      fontSize: 14,
+      fontWeight: 600,
+      border: "none",
+      background: THEME.ink,
+      color: "white",
+      cursor: loading ? "default" : "pointer",
+      opacity: loading ? 0.7 : 1
+    }
+  }, loading ? "Memeriksa…" : "Masuk")), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: THEME.muted,
+      marginTop: 16,
+      marginBottom: 0,
+      textAlign: "center"
+    }
+  }, "Belum punya akun? Minta pemilik aplikasi membuatkan akun untukmu.")));
+}
+
+/* =================== APP UTAMA (setelah login) =================== */
+function MainApp({
+  session
+}) {
+  const [loadingData, setLoadingData] = useState(true);
   const [products, setProducts] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [tab, setTab] = useState("dashboard");
@@ -137,41 +354,27 @@ function App() {
   const [saleQty, setSaleQty] = useState("1");
   const [saleCustomer, setSaleCustomer] = useState("");
   const [saleError, setSaleError] = useState("");
+  const loadAll = useCallback(async () => {
+    setLoadingData(true);
+    const [{
+      data: pData,
+      error: pErr
+    }, {
+      data: tData,
+      error: tErr
+    }] = await Promise.all([supabase.from("products").select("*").order("created_at", {
+      ascending: false
+    }), supabase.from("transactions").select("*").order("date", {
+      ascending: false
+    })]);
+    if (pErr || tErr) setSaveError("Gagal memuat data dari database.");
+    setProducts(pData ? pData.map(productFromDb) : []);
+    setTransactions(tData ? tData.map(txFromDb) : []);
+    setLoadingData(false);
+  }, []);
   useEffect(() => {
-    (async () => {
-      try {
-        let p = [];
-        let t = [];
-        try {
-          const r = await storage.get("products");
-          if (r?.value) p = JSON.parse(r.value);
-        } catch (e) {}
-        try {
-          const r = await storage.get("transactions");
-          if (r?.value) t = JSON.parse(r.value);
-        } catch (e) {}
-        setProducts(p);
-        setTransactions(t);
-      } finally {
-        setReady(true);
-      }
-    })();
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("./sw.js").catch(() => {});
-    }
-  }, []);
-  const persist = useCallback(async (key, value) => {
-    const res = await storage.set(key, JSON.stringify(value));
-    setSaveError(res ? "" : "Gagal menyimpan data. Coba lagi.");
-  }, []);
-  const saveProducts = next => {
-    setProducts(next);
-    persist("products", next);
-  };
-  const saveTransactions = next => {
-    setTransactions(next);
-    persist("transactions", next);
-  };
+    loadAll();
+  }, [loadAll]);
   const monthTx = transactions.filter(t => sameMonth(t.date));
   const monthProfit = monthTx.reduce((s, t) => s + t.profit, 0);
   const monthQty = monthTx.reduce((s, t) => s + t.qty, 0);
@@ -183,25 +386,45 @@ function App() {
   const qtyNum = parseInt(saleQty, 10) || 0;
   const previewTotal = selectedProduct ? selectedProduct.sellPrice * qtyNum : 0;
   const previewProfit = selectedProduct ? (selectedProduct.sellPrice - selectedProduct.buyPrice) * qtyNum : 0;
-  function upsertProduct(data) {
+  async function upsertProduct(data) {
+    setSaveError("");
     if (data.id) {
-      saveProducts(products.map(p => p.id === data.id ? {
+      const {
+        error
+      } = await supabase.from("products").update({
+        name: data.name,
+        buy_price: data.buyPrice,
+        sell_price: data.sellPrice,
+        stock: data.stock
+      }).eq("id", data.id);
+      if (error) return setSaveError("Gagal menyimpan produk.");
+      setProducts(products.map(p => p.id === data.id ? {
         ...p,
         ...data
       } : p));
     } else {
-      saveProducts([{
+      const newP = {
         ...data,
         id: uid()
-      }, ...products]);
+      };
+      const {
+        error
+      } = await supabase.from("products").insert(productToDbInsert(newP));
+      if (error) return setSaveError("Gagal menambah produk.");
+      setProducts([newP, ...products]);
     }
     setProductModal(null);
   }
-  function deleteProduct(id) {
-    saveProducts(products.filter(p => p.id !== id));
+  async function deleteProduct(id) {
+    setSaveError("");
+    const {
+      error
+    } = await supabase.from("products").delete().eq("id", id);
+    if (error) return setSaveError("Gagal menghapus produk.");
+    setProducts(products.filter(p => p.id !== id));
     setConfirmDelete(null);
   }
-  function recordSale() {
+  async function recordSale() {
     setSaleError("");
     if (!selectedProduct) return setSaleError("Pilih produk dulu.");
     if (qtyNum <= 0) return setSaleError("Jumlah harus lebih dari 0.");
@@ -218,25 +441,48 @@ function App() {
       profit: (selectedProduct.sellPrice - selectedProduct.buyPrice) * qtyNum,
       date: todayISO()
     };
-    saveTransactions([tx, ...transactions]);
-    saveProducts(products.map(p => p.id === selectedProduct.id ? {
+    const newStock = selectedProduct.stock - qtyNum;
+    const {
+      error: txErr
+    } = await supabase.from("transactions").insert(txToDbInsert(tx));
+    if (txErr) return setSaleError("Gagal menyimpan transaksi.");
+    const {
+      error: pErr
+    } = await supabase.from("products").update({
+      stock: newStock
+    }).eq("id", selectedProduct.id);
+    if (pErr) setSaveError("Transaksi tersimpan, tapi gagal memperbarui stok.");
+    setTransactions([tx, ...transactions]);
+    setProducts(products.map(p => p.id === selectedProduct.id ? {
       ...p,
-      stock: p.stock - qtyNum
+      stock: newStock
     } : p));
     setSaleProductId("");
     setSaleQty("1");
     setSaleCustomer("");
     setTab("dashboard");
   }
-  function deleteTransaction(tx) {
-    saveTransactions(transactions.filter(t => t.id !== tx.id));
-    saveProducts(products.map(p => p.id === tx.productId ? {
-      ...p,
-      stock: p.stock + tx.qty
-    } : p));
+  async function deleteTransaction(tx) {
+    setSaveError("");
+    const {
+      error
+    } = await supabase.from("transactions").delete().eq("id", tx.id);
+    if (error) return setSaveError("Gagal menghapus transaksi.");
+    const owner = products.find(p => p.id === tx.productId);
+    if (owner) {
+      const restored = owner.stock + tx.qty;
+      await supabase.from("products").update({
+        stock: restored
+      }).eq("id", owner.id);
+      setProducts(products.map(p => p.id === owner.id ? {
+        ...p,
+        stock: restored
+      } : p));
+    }
+    setTransactions(transactions.filter(t => t.id !== tx.id));
     setConfirmDelete(null);
   }
-  if (!ready) {
+  if (loadingData) {
     return /*#__PURE__*/React.createElement("div", {
       style: {
         minHeight: "100vh",
@@ -251,7 +497,7 @@ function App() {
         fontSize: 14,
         color: THEME.muted
       }
-    }, "Membuka buku catatan…"));
+    }, "Mengambil data dari database…"));
   }
   return /*#__PURE__*/React.createElement("div", {
     style: {
@@ -268,6 +514,12 @@ function App() {
       borderBottomRightRadius: 24,
       boxShadow: "0 4px 10px rgba(0,0,0,0.08)",
       background: `linear-gradient(160deg, ${THEME.ink}, ${THEME.inkDark})`
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between"
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -301,7 +553,19 @@ function App() {
       color: "rgba(255,255,255,0.6)",
       margin: 0
     }
-  }, "Catatan stok & keuntungan")))), saveError && /*#__PURE__*/React.createElement("div", {
+  }, session.user.email))), /*#__PURE__*/React.createElement("button", {
+    onClick: () => supabase.auth.signOut(),
+    style: {
+      background: "rgba(255,255,255,0.12)",
+      border: "none",
+      color: "white",
+      fontSize: 12,
+      fontWeight: 500,
+      padding: "8px 12px",
+      borderRadius: 10,
+      cursor: "pointer"
+    }
+  }, "Keluar"))), saveError && /*#__PURE__*/React.createElement("div", {
     style: {
       margin: "12px 20px 0",
       padding: "8px 12px",
@@ -1129,7 +1393,8 @@ function ProductModal({
   const [sellPrice, setSellPrice] = useState(initial?.sellPrice?.toString() || "");
   const [stock, setStock] = useState(initial?.stock?.toString() || "");
   const [error, setError] = useState("");
-  function submit() {
+  const [saving, setSaving] = useState(false);
+  async function submit() {
     if (!name.trim()) return setError("Nama produk wajib diisi.");
     const bp = parseFloat(buyPrice);
     const sp = parseFloat(sellPrice);
@@ -1137,13 +1402,15 @@ function ProductModal({
     if (isNaN(bp) || bp < 0) return setError("Harga beli tidak valid.");
     if (isNaN(sp) || sp < 0) return setError("Harga jual tidak valid.");
     if (isNaN(st) || st < 0) return setError("Jumlah stok tidak valid.");
-    onSave({
+    setSaving(true);
+    await onSave({
       id: initial?.id,
       name: name.trim(),
       buyPrice: bp,
       sellPrice: sp,
       stock: st
     });
+    setSaving(false);
   }
   const inputStyle = {
     width: "100%",
@@ -1262,6 +1529,7 @@ function ProductModal({
     }
   }, error), /*#__PURE__*/React.createElement("button", {
     onClick: submit,
+    disabled: saving,
     style: {
       width: "100%",
       padding: 12,
@@ -1271,9 +1539,10 @@ function ProductModal({
       border: "none",
       background: THEME.ink,
       color: "white",
-      cursor: "pointer"
+      cursor: saving ? "default" : "pointer",
+      opacity: saving ? 0.7 : 1
     }
-  }, initial ? "Simpan Perubahan" : "Tambah Produk")));
+  }, saving ? "Menyimpan…" : initial ? "Simpan Perubahan" : "Tambah Produk")));
 }
 function ConfirmModal({
   title,
@@ -1281,6 +1550,7 @@ function ConfirmModal({
   onCancel,
   onConfirm
 }) {
+  const [busy, setBusy] = useState(false);
   return /*#__PURE__*/React.createElement("div", {
     onClick: onCancel,
     style: {
@@ -1336,7 +1606,11 @@ function ConfirmModal({
       cursor: "pointer"
     }
   }, "Batal"), /*#__PURE__*/React.createElement("button", {
-    onClick: onConfirm,
+    onClick: async () => {
+      setBusy(true);
+      await onConfirm();
+    },
+    disabled: busy,
     style: {
       flex: 1,
       padding: 10,
@@ -1346,11 +1620,45 @@ function ConfirmModal({
       border: "none",
       background: THEME.red,
       color: "white",
-      cursor: "pointer"
+      cursor: busy ? "default" : "pointer",
+      opacity: busy ? 0.7 : 1
     }
-  }, "Hapus"))));
+  }, busy ? "Menghapus…" : "Hapus"))));
 }
-ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/React.createElement(App, null));
+
+/* =================== ROOT: cek sesi login =================== */
+function Root() {
+  const [session, setSession] = useState(undefined); // undefined = belum dicek, null = belum login
+
+  useEffect(() => {
+    if (!isConfigured) return;
+    supabase.auth.getSession().then(({
+      data
+    }) => setSession(data.session));
+    const {
+      data: sub
+    } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+  if (!isConfigured) return /*#__PURE__*/React.createElement(SetupNotice, null);
+  if (session === undefined) {
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: THEME.paper,
+        color: THEME.muted,
+        fontSize: 14
+      }
+    }, "Memeriksa sesi login…");
+  }
+  return session ? /*#__PURE__*/React.createElement(MainApp, {
+    session: session
+  }) : /*#__PURE__*/React.createElement(LoginScreen, null);
+}
+ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/React.createElement(Root, null));
 </script>
 </body>
 </html>
