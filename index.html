@@ -27,6 +27,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
 <body>
 <div id="root"></div>
@@ -35,11 +36,11 @@
 const {
   useState,
   useEffect,
-  useCallback
+  useCallback,
+  useMemo
 } = React;
 
 /* =================== KONFIGURASI SUPABASE =================== */
-/* Ganti dua nilai di bawah ini dengan Project URL dan anon public key dari Supabase-mu */
 const SUPABASE_URL = "https://tptnoeaasgdijuruwrzm.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRwdG5vZWFhc2dkaWp1cnV3cnptIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc2NDgwNzksImV4cCI6MjEwMzIyNDA3OX0.-r41UT4Pkpg0c3MnxtofWiEBuVXrtVICPskRlY7d9Kg";
 /* =============================================================== */
@@ -47,8 +48,8 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const isConfigured = SUPABASE_URL.startsWith("http") && !SUPABASE_ANON_KEY.startsWith("GANTI_");
 const supabaseClient = isConfigured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
-/* ---------- theme ---------- */
-const THEME = {
+/* ---------- theme (bisa dialihkan terang/gelap) ---------- */
+const LIGHT_THEME = {
   paper: "#E9EEE2",
   card: "#F8F7F0",
   ink: "#1F3A2E",
@@ -61,6 +62,27 @@ const THEME = {
   muted: "#647062",
   line: "rgba(31,58,46,0.16)"
 };
+const DARK_THEME = {
+  paper: "#141B15",
+  card: "#1E2820",
+  ink: "#0D1410",
+  inkDark: "#070B08",
+  gold: "#D9AE5C",
+  goldDark: "#C89B3C",
+  red: "#E07A7A",
+  redSoft: "rgba(224,122,122,0.15)",
+  text: "#E7ECE3",
+  muted: "#93A08E",
+  line: "rgba(255,255,255,0.12)"
+};
+const THEME = {
+  ...LIGHT_THEME
+};
+function applyTheme(dark) {
+  Object.assign(THEME, dark ? DARK_THEME : LIGHT_THEME);
+}
+const initialDark = localStorage.getItem("buku_untung_dark") === "1";
+applyTheme(initialDark);
 const LOW_STOCK = 5;
 const money = n => "Rp" + Math.round(n || 0).toLocaleString("id-ID");
 const todayISO = () => new Date().toISOString();
@@ -78,6 +100,7 @@ const fmtTime = iso => new Date(iso).toLocaleTimeString("id-ID", {
   hour: "2-digit",
   minute: "2-digit"
 });
+const dayKey = iso => new Date(iso).toISOString().slice(0, 10);
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
 /* ---------- mapping DB <-> app ---------- */
@@ -87,7 +110,11 @@ function productFromDb(r) {
     name: r.name,
     buyPrice: Number(r.buy_price),
     sellPrice: Number(r.sell_price),
-    stock: Number(r.stock)
+    stock: Number(r.stock),
+    category: r.category || "Umum",
+    buyUnit: r.buy_unit || "pcs",
+    sellUnit: r.sell_unit || "pcs",
+    unitsPerBuy: Number(r.units_per_buy || 1)
   };
 }
 function productToDbInsert(p) {
@@ -96,7 +123,11 @@ function productToDbInsert(p) {
     name: p.name,
     buy_price: p.buyPrice,
     sell_price: p.sellPrice,
-    stock: p.stock
+    stock: p.stock,
+    category: p.category || "Umum",
+    buy_unit: p.buyUnit || "pcs",
+    sell_unit: p.sellUnit || "pcs",
+    units_per_buy: p.unitsPerBuy || 1
   };
 }
 function txFromDb(r) {
@@ -110,21 +141,8 @@ function txFromDb(r) {
     sellPrice: Number(r.sell_price),
     total: Number(r.total),
     profit: Number(r.profit),
-    date: r.date
-  };
-}
-function txToDbInsert(t) {
-  return {
-    id: t.id,
-    product_id: t.productId,
-    product_name: t.productName,
-    customer: t.customer || null,
-    qty: t.qty,
-    buy_price: t.buyPrice,
-    sell_price: t.sellPrice,
-    total: t.total,
-    profit: t.profit,
-    date: t.date
+    date: r.date,
+    recordedByEmail: r.recorded_by_email || ""
   };
 }
 function LedgerCard({
@@ -158,8 +176,185 @@ function Stamp({
     }
   }, text);
 }
+function HeaderBar({
+  title,
+  subtitle,
+  icon,
+  dark,
+  onToggleDark,
+  onLogout
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "24px 20px 20px",
+      borderBottomLeftRadius: 24,
+      borderBottomRightRadius: 24,
+      boxShadow: "0 4px 10px rgba(0,0,0,0.08)",
+      background: `linear-gradient(160deg, ${THEME.ink}, ${THEME.inkDark})`
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 36,
+      height: 36,
+      borderRadius: 10,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      background: "rgba(255,255,255,0.12)",
+      color: THEME.gold,
+      fontSize: 18
+    }
+  }, icon), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h1", {
+    style: {
+      fontSize: 18,
+      fontWeight: 700,
+      color: "white",
+      margin: 0,
+      lineHeight: 1.2
+    }
+  }, title), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: "rgba(255,255,255,0.6)",
+      margin: 0
+    }
+  }, subtitle))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: onToggleDark,
+    title: "Ganti tampilan",
+    style: {
+      background: "rgba(255,255,255,0.12)",
+      border: "none",
+      color: "white",
+      fontSize: 14,
+      padding: "8px 10px",
+      borderRadius: 10,
+      cursor: "pointer"
+    }
+  }, dark ? "☀️" : "🌙"), /*#__PURE__*/React.createElement("button", {
+    onClick: onLogout,
+    style: {
+      background: "rgba(255,255,255,0.12)",
+      border: "none",
+      color: "white",
+      fontSize: 12,
+      fontWeight: 500,
+      padding: "8px 12px",
+      borderRadius: 10,
+      cursor: "pointer"
+    }
+  }, "Keluar"))));
+}
 
-/* =================== SETUP NOTICE (kalau kredensial belum diisi) =================== */
+/* =================== Struk WhatsApp ===================*/
+function buildReceiptText(tx) {
+  return ["*Struk Pembelian*", `Produk: ${tx.productName}`, `Jumlah: ${tx.qty}`, `Total: ${money(tx.total)}`, `Tanggal: ${fmtDate(tx.date)} ${fmtTime(tx.date)}`, "", "Terima kasih sudah berbelanja!"].join("
+");
+}
+function shareReceiptWhatsApp(tx) {
+  const url = "https://wa.me/?text=" + encodeURIComponent(buildReceiptText(tx));
+  window.open(url, "_blank");
+}
+
+/* =================== Grafik tren dengan pilihan rentang (SVG ringan, tanpa library) ===================*/
+function profitSeries(transactions, rangeDays) {
+  if (rangeDays <= 30) {
+    const days = [];
+    for (let i = rangeDays - 1; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      days.push({
+        key: dayKey(d.toISOString()),
+        label: rangeDays <= 7 ? d.toLocaleDateString("id-ID", {
+          weekday: "short"
+        }) : d.getDate().toString(),
+        profit: 0
+      });
+    }
+    transactions.forEach(t => {
+      const k = dayKey(t.date);
+      const day = days.find(d => d.key === k);
+      if (day) day.profit += t.profit;
+    });
+    return days;
+  }
+  const numWeeks = Math.ceil(rangeDays / 7);
+  const weeks = [];
+  for (let i = numWeeks - 1; i >= 0; i--) {
+    const end = new Date();
+    end.setDate(end.getDate() - i * 7);
+    const start = new Date(end);
+    start.setDate(start.getDate() - 6);
+    weeks.push({
+      key: dayKey(start.toISOString()),
+      start: dayKey(start.toISOString()),
+      end: dayKey(end.toISOString()),
+      label: `${start.getDate()}/${start.getMonth() + 1}`,
+      profit: 0
+    });
+  }
+  transactions.forEach(t => {
+    const k = dayKey(t.date);
+    const w = weeks.find(w => k >= w.start && k <= w.end);
+    if (w) w.profit += t.profit;
+  });
+  return weeks;
+}
+function TrendChart({
+  data
+}) {
+  const max = Math.max(1, ...data.map(d => d.profit));
+  const W = 320,
+    H = 110;
+  const barGap = data.length > 20 ? 1 : 3;
+  const barW = Math.max(1.5, W / data.length - barGap);
+  const labelEvery = Math.max(1, Math.ceil(data.length / 7));
+  return /*#__PURE__*/React.createElement("svg", {
+    viewBox: `0 0 ${W} ${H + 20}`,
+    style: {
+      width: "100%",
+      height: 130
+    }
+  }, data.map((d, i) => {
+    const h = Math.max(2, d.profit / max * H);
+    const x = i * (W / data.length);
+    const y = H - h;
+    return /*#__PURE__*/React.createElement("g", {
+      key: d.key + i
+    }, /*#__PURE__*/React.createElement("rect", {
+      x: x,
+      y: y,
+      width: barW,
+      height: h,
+      rx: data.length > 20 ? 1 : 2,
+      fill: THEME.gold
+    }), i % labelEvery === 0 && /*#__PURE__*/React.createElement("text", {
+      x: x + barW / 2,
+      y: H + 14,
+      fontSize: "8",
+      fill: THEME.muted,
+      textAnchor: "middle"
+    }, d.label));
+  }));
+}
+
+/* =================== SETUP NOTICE =================== */
 function SetupNotice() {
   return /*#__PURE__*/React.createElement("div", {
     style: {
@@ -187,18 +382,21 @@ function SetupNotice() {
       fontSize: 14,
       color: THEME.muted
     }
-  }, "Buka file index.html, cari SUPABASE_URL dan SUPABASE_ANON_KEY di bagian atas kode, lalu ganti dengan nilai dari project Supabase kamu.")));
+  }, "Isi SUPABASE_URL dan SUPABASE_ANON_KEY di bagian atas kode index.html.")));
 }
 
-/* =================== LOGIN SCREEN =================== */
+/* =================== LOGIN + LUPA PASSWORD =================== */
 function LoginScreen() {
+  const [mode, setMode] = useState("login"); // login | forgot
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
   const [loading, setLoading] = useState(false);
-  async function submit(e) {
+  async function submitLogin(e) {
     e.preventDefault();
     setError("");
+    setInfo("");
     if (!email.trim() || !password) return setError("Isi email dan password dulu.");
     setLoading(true);
     const {
@@ -209,6 +407,20 @@ function LoginScreen() {
     });
     setLoading(false);
     if (err) setError(err.message === "Invalid login credentials" ? "Email atau password salah." : err.message);
+  }
+  async function submitForgot(e) {
+    e.preventDefault();
+    setError("");
+    setInfo("");
+    if (!email.trim()) return setError("Isi email dulu.");
+    setLoading(true);
+    const {
+      error: err
+    } = await supabaseClient.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: window.location.origin + window.location.pathname
+    });
+    setLoading(false);
+    if (err) setError(err.message);else setInfo("Link reset password sudah dikirim ke email kamu. Cek inbox (atau folder spam).");
   }
   const inputStyle = {
     width: "100%",
@@ -267,8 +479,8 @@ function LoginScreen() {
       color: THEME.muted,
       margin: 0
     }
-  }, "Masuk untuk lanjut mencatat"))), /*#__PURE__*/React.createElement("form", {
-    onSubmit: submit
+  }, mode === "login" ? "Masuk untuk lanjut mencatat" : "Reset password"))), mode === "login" ? /*#__PURE__*/React.createElement("form", {
+    onSubmit: submitLogin
   }, /*#__PURE__*/React.createElement("label", {
     style: {
       fontSize: 12,
@@ -302,9 +514,213 @@ function LoginScreen() {
     placeholder: "••••••••",
     style: {
       ...inputStyle,
-      marginBottom: 14
+      marginBottom: 8
     },
     autoComplete: "current-password"
+  }), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => {
+      setMode("forgot");
+      setError("");
+      setInfo("");
+    },
+    style: {
+      background: "none",
+      border: "none",
+      color: THEME.goldDark,
+      fontSize: 12,
+      fontWeight: 600,
+      cursor: "pointer",
+      padding: 0,
+      marginBottom: 14
+    }
+  }, "Lupa password?"), error && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      fontWeight: 500,
+      marginBottom: 14,
+      color: THEME.red
+    }
+  }, error), /*#__PURE__*/React.createElement("button", {
+    type: "submit",
+    disabled: loading,
+    style: {
+      width: "100%",
+      padding: 13,
+      borderRadius: 12,
+      fontSize: 14,
+      fontWeight: 600,
+      border: "none",
+      background: THEME.ink,
+      color: "white",
+      cursor: loading ? "default" : "pointer",
+      opacity: loading ? 0.7 : 1
+    }
+  }, loading ? "Memeriksa…" : "Masuk")) : /*#__PURE__*/React.createElement("form", {
+    onSubmit: submitForgot
+  }, /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 12,
+      fontWeight: 500,
+      display: "block",
+      marginBottom: 4,
+      color: THEME.muted
+    }
+  }, "Email"), /*#__PURE__*/React.createElement("input", {
+    type: "email",
+    value: email,
+    onChange: e => setEmail(e.target.value),
+    placeholder: "nama@email.com",
+    style: {
+      ...inputStyle,
+      marginBottom: 14
+    }
+  }), error && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      fontWeight: 500,
+      marginBottom: 14,
+      color: THEME.red
+    }
+  }, error), info && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      fontWeight: 500,
+      marginBottom: 14,
+      color: THEME.goldDark
+    }
+  }, info), /*#__PURE__*/React.createElement("button", {
+    type: "submit",
+    disabled: loading,
+    style: {
+      width: "100%",
+      padding: 13,
+      borderRadius: 12,
+      fontSize: 14,
+      fontWeight: 600,
+      border: "none",
+      background: THEME.ink,
+      color: "white",
+      cursor: loading ? "default" : "pointer",
+      opacity: loading ? 0.7 : 1,
+      marginBottom: 10
+    }
+  }, loading ? "Mengirim…" : "Kirim link reset"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => {
+      setMode("login");
+      setError("");
+      setInfo("");
+    },
+    style: {
+      width: "100%",
+      background: "none",
+      border: "none",
+      color: THEME.muted,
+      fontSize: 12,
+      fontWeight: 500,
+      cursor: "pointer"
+    }
+  }, "← Kembali ke login")), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: THEME.muted,
+      marginTop: 16,
+      marginBottom: 0,
+      textAlign: "center"
+    }
+  }, "Belum punya akun? Minta pemilik aplikasi membuatkan akun untukmu.")));
+}
+
+/* =================== SET PASSWORD BARU (dari link reset) =================== */
+function ResetPasswordScreen({
+  onDone
+}) {
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  async function submit(e) {
+    e.preventDefault();
+    setError("");
+    if (password.length < 6) return setError("Password minimal 6 karakter.");
+    if (password !== confirm) return setError("Konfirmasi password tidak sama.");
+    setLoading(true);
+    const {
+      error: err
+    } = await supabaseClient.auth.updateUser({
+      password
+    });
+    setLoading(false);
+    if (err) return setError(err.message);
+    onDone();
+  }
+  const inputStyle = {
+    width: "100%",
+    padding: "12px 14px",
+    borderRadius: 12,
+    fontSize: 14,
+    background: THEME.paper,
+    border: `1px solid ${THEME.line}`,
+    color: THEME.text,
+    outline: "none"
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      minHeight: "100vh",
+      background: THEME.paper,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 24
+    }
+  }, /*#__PURE__*/React.createElement(LedgerCard, {
+    style: {
+      padding: 28,
+      width: "100%",
+      maxWidth: 380
+    }
+  }, /*#__PURE__*/React.createElement("h1", {
+    style: {
+      fontSize: 17,
+      fontWeight: 700,
+      color: THEME.ink,
+      marginTop: 0
+    }
+  }, "Buat password baru"), /*#__PURE__*/React.createElement("form", {
+    onSubmit: submit
+  }, /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 12,
+      fontWeight: 500,
+      display: "block",
+      marginBottom: 4,
+      color: THEME.muted
+    }
+  }, "Password baru"), /*#__PURE__*/React.createElement("input", {
+    type: "password",
+    value: password,
+    onChange: e => setPassword(e.target.value),
+    style: {
+      ...inputStyle,
+      marginBottom: 14
+    }
+  }), /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 12,
+      fontWeight: 500,
+      display: "block",
+      marginBottom: 4,
+      color: THEME.muted
+    }
+  }, "Ulangi password baru"), /*#__PURE__*/React.createElement("input", {
+    type: "password",
+    value: confirm,
+    onChange: e => setConfirm(e.target.value),
+    style: {
+      ...inputStyle,
+      marginBottom: 14
+    }
   }), error && /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 12,
@@ -327,20 +743,14 @@ function LoginScreen() {
       cursor: loading ? "default" : "pointer",
       opacity: loading ? 0.7 : 1
     }
-  }, loading ? "Memeriksa…" : "Masuk")), /*#__PURE__*/React.createElement("p", {
-    style: {
-      fontSize: 11,
-      color: THEME.muted,
-      marginTop: 16,
-      marginBottom: 0,
-      textAlign: "center"
-    }
-  }, "Belum punya akun? Minta pemilik aplikasi membuatkan akun untukmu.")));
+  }, loading ? "Menyimpan…" : "Simpan password baru"))));
 }
 
-/* =================== APP UTAMA (setelah login) =================== */
+/* =================== APLIKASI ADMIN =================== */
 function MainApp({
-  session
+  session,
+  dark,
+  onToggleDark
 }) {
   const [loadingData, setLoadingData] = useState(true);
   const [products, setProducts] = useState([]);
@@ -349,11 +759,14 @@ function MainApp({
   const [productModal, setProductModal] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [search, setSearch] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("Semua");
   const [saveError, setSaveError] = useState("");
+  const [notifStatus, setNotifStatus] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported");
   const [saleProductId, setSaleProductId] = useState("");
   const [saleQty, setSaleQty] = useState("1");
   const [saleCustomer, setSaleCustomer] = useState("");
   const [saleError, setSaleError] = useState("");
+  const [lastTx, setLastTx] = useState(null);
   const loadAll = useCallback(async () => {
     setLoadingData(true);
     const [{
@@ -380,12 +793,46 @@ function MainApp({
   const monthQty = monthTx.reduce((s, t) => s + t.qty, 0);
   const stockValue = products.reduce((s, p) => s + p.buyPrice * p.stock, 0);
   const lowStock = products.filter(p => p.stock <= LOW_STOCK);
-  const filteredProducts = products.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
+  const categories = useMemo(() => ["Semua", ...Array.from(new Set(products.map(p => p.category || "Umum")))], [products]);
+  const filteredProducts = products.filter(p => p.name.toLowerCase().includes(search.toLowerCase()) && (categoryFilter === "Semua" || p.category === categoryFilter));
   const sellableProducts = products.filter(p => p.stock > 0);
   const selectedProduct = products.find(p => p.id === saleProductId);
   const qtyNum = parseInt(saleQty, 10) || 0;
   const previewTotal = selectedProduct ? selectedProduct.sellPrice * qtyNum : 0;
-  const previewProfit = selectedProduct ? (selectedProduct.sellPrice - selectedProduct.buyPrice) * qtyNum : 0;
+  const previewProfit = selectedProduct ? (selectedProduct.sellPrice - selectedProduct.buyPrice / (selectedProduct.unitsPerBuy || 1)) * qtyNum : 0;
+  const staffReport = useMemo(() => {
+    const map = {};
+    transactions.forEach(t => {
+      const key = t.recordedByEmail || "(tidak tercatat)";
+      if (!map[key]) map[key] = {
+        count: 0,
+        profit: 0
+      };
+      map[key].count += 1;
+      map[key].profit += t.profit;
+    });
+    return Object.entries(map).map(([email, v]) => ({
+      email,
+      ...v
+    })).sort((a, b) => b.profit - a.profit);
+  }, [transactions]);
+  useEffect(() => {
+    if (notifStatus === "granted" && lowStock.length > 0 && !loadingData) {
+      const key = "notified_" + new Date().toDateString();
+      if (!sessionStorage.getItem(key)) {
+        try {
+          new Notification("Stok menipis", {
+            body: `${lowStock.length} produk stoknya sudah di bawah ${LOW_STOCK}.`
+          });
+        } catch (e) {}
+        sessionStorage.setItem(key, "1");
+      }
+    }
+  }, [notifStatus, lowStock.length, loadingData]);
+  function requestNotif() {
+    if (typeof Notification === "undefined") return;
+    Notification.requestPermission().then(p => setNotifStatus(p));
+  }
   async function upsertProduct(data) {
     setSaveError("");
     if (data.id) {
@@ -395,7 +842,11 @@ function MainApp({
         name: data.name,
         buy_price: data.buyPrice,
         sell_price: data.sellPrice,
-        stock: data.stock
+        stock: data.stock,
+        category: data.category,
+        buy_unit: data.buyUnit,
+        sell_unit: data.sellUnit,
+        units_per_buy: data.unitsPerBuy
       }).eq("id", data.id);
       if (error) return setSaveError("Gagal menyimpan produk.");
       setProducts(products.map(p => p.id === data.id ? {
@@ -430,6 +881,7 @@ function MainApp({
     if (qtyNum <= 0) return setSaleError("Jumlah harus lebih dari 0.");
     if (qtyNum > selectedProduct.stock) return setSaleError(`Stok tidak cukup. Sisa stok: ${selectedProduct.stock}.`);
     const {
+      data,
       error
     } = await supabaseClient.rpc("record_sale", {
       p_id: uid(),
@@ -438,11 +890,12 @@ function MainApp({
       p_customer: saleCustomer.trim() || null
     });
     if (error) return setSaleError(error.message || "Gagal menyimpan transaksi.");
+    const row = data && data[0];
+    if (row) setLastTx(txFromDb(row));
     await loadAll();
     setSaleProductId("");
     setSaleQty("1");
     setSaleCustomer("");
-    setTab("dashboard");
   }
   async function deleteTransaction(tx) {
     setSaveError("");
@@ -489,65 +942,14 @@ function MainApp({
       display: "flex",
       flexDirection: "column"
     }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: "24px 20px 20px",
-      borderBottomLeftRadius: 24,
-      borderBottomRightRadius: 24,
-      boxShadow: "0 4px 10px rgba(0,0,0,0.08)",
-      background: `linear-gradient(160deg, ${THEME.ink}, ${THEME.inkDark})`
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 8
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      width: 36,
-      height: 36,
-      borderRadius: 10,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      background: "rgba(255,255,255,0.12)",
-      color: THEME.gold,
-      fontSize: 18
-    }
-  }, "💰"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h1", {
-    style: {
-      fontSize: 18,
-      fontWeight: 700,
-      color: "white",
-      margin: 0,
-      lineHeight: 1.2
-    }
-  }, "Buku Untung"), /*#__PURE__*/React.createElement("p", {
-    style: {
-      fontSize: 12,
-      color: "rgba(255,255,255,0.6)",
-      margin: 0
-    }
-  }, session.user.email))), /*#__PURE__*/React.createElement("button", {
-    onClick: () => supabaseClient.auth.signOut(),
-    style: {
-      background: "rgba(255,255,255,0.12)",
-      border: "none",
-      color: "white",
-      fontSize: 12,
-      fontWeight: 500,
-      padding: "8px 12px",
-      borderRadius: 10,
-      cursor: "pointer"
-    }
-  }, "Keluar"))), saveError && /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement(HeaderBar, {
+    title: "Buku Untung",
+    subtitle: session.user.email,
+    icon: "💰",
+    dark: dark,
+    onToggleDark: onToggleDark,
+    onLogout: () => supabaseClient.auth.signOut()
+  }), saveError && /*#__PURE__*/React.createElement("div", {
     style: {
       margin: "12px 20px 0",
       padding: "8px 12px",
@@ -570,12 +972,18 @@ function MainApp({
     productCount: products.length,
     lowStock: lowStock,
     recent: transactions.slice(0, 3),
+    transactions: transactions,
     onSeeAll: () => setTab("riwayat"),
-    onGoStok: () => setTab("stok")
+    onGoStok: () => setTab("stok"),
+    notifStatus: notifStatus,
+    onRequestNotif: requestNotif
   }), tab === "stok" && /*#__PURE__*/React.createElement(StokTab, {
     products: filteredProducts,
     search: search,
     setSearch: setSearch,
+    categories: categories,
+    categoryFilter: categoryFilter,
+    setCategoryFilter: setCategoryFilter,
     onAdd: () => setProductModal("new"),
     onEdit: p => setProductModal(p),
     onDelete: p => setConfirmDelete({
@@ -596,9 +1004,12 @@ function MainApp({
     previewTotal: previewTotal,
     previewProfit: previewProfit,
     onSubmit: recordSale,
-    onGoStok: () => setTab("stok")
+    onGoStok: () => setTab("stok"),
+    lastTx: lastTx,
+    onClearLastTx: () => setLastTx(null)
   }), tab === "riwayat" && /*#__PURE__*/React.createElement(RiwayatTab, {
     transactions: transactions,
+    staffReport: staffReport,
     onDelete: tx => setConfirmDelete({
       type: "transaction",
       id: tx.id,
@@ -689,13 +1100,19 @@ function Dashboard({
   productCount,
   lowStock,
   recent,
+  transactions,
   onSeeAll,
-  onGoStok
+  onGoStok,
+  notifStatus,
+  onRequestNotif
 }) {
   const monthLabel = new Date().toLocaleDateString("id-ID", {
     month: "long",
     year: "numeric"
   });
+  const [chartRange, setChartRange] = useState(7);
+  const chartData = useMemo(() => profitSeries(transactions, chartRange), [transactions, chartRange]);
+  const chartTotal = chartData.reduce((s, d) => s + d.profit, 0);
   return /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
@@ -729,7 +1146,57 @@ function Dashboard({
       marginTop: 4,
       color: "rgba(255,255,255,0.55)"
     }
-  }, monthQty, " item terjual bulan ini")), /*#__PURE__*/React.createElement("div", {
+  }, monthQty, " item terjual bulan ini")), /*#__PURE__*/React.createElement(LedgerCard, {
+    style: {
+      padding: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: 4
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      fontWeight: 600,
+      color: THEME.ink,
+      margin: 0
+    }
+  }, "Tren keuntungan"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 4
+    }
+  }, [7, 30, 90].map(r => /*#__PURE__*/React.createElement("button", {
+    key: r,
+    onClick: () => setChartRange(r),
+    style: {
+      fontSize: 11,
+      fontWeight: 600,
+      padding: "4px 9px",
+      borderRadius: 8,
+      border: "none",
+      background: chartRange === r ? THEME.ink : THEME.paper,
+      color: chartRange === r ? "white" : THEME.muted,
+      cursor: "pointer"
+    }
+  }, r, "h")))), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: THEME.muted,
+      margin: "0 0 8px"
+    }
+  }, "Total ", chartRange, " hari terakhir: ", /*#__PURE__*/React.createElement("span", {
+    className: "font-ledger",
+    style: {
+      fontWeight: 700,
+      color: THEME.goldDark
+    }
+  }, money(chartTotal))), /*#__PURE__*/React.createElement(TrendChart, {
+    data: chartData
+  })), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "1fr 1fr",
@@ -779,7 +1246,37 @@ function Dashboard({
       color: THEME.ink,
       margin: 0
     }
-  }, productCount))), lowStock.length > 0 && /*#__PURE__*/React.createElement(LedgerCard, {
+  }, productCount))), notifStatus === "default" && /*#__PURE__*/React.createElement(LedgerCard, {
+    style: {
+      padding: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: THEME.muted,
+      margin: 0
+    }
+  }, "Aktifkan notifikasi stok menipis (muncul saat aplikasi dibuka)."), /*#__PURE__*/React.createElement("button", {
+    onClick: onRequestNotif,
+    style: {
+      fontSize: 12,
+      fontWeight: 600,
+      padding: "6px 10px",
+      borderRadius: 10,
+      border: "none",
+      background: THEME.ink,
+      color: "white",
+      cursor: "pointer",
+      whiteSpace: "nowrap"
+    }
+  }, "Aktifkan"))), lowStock.length > 0 && /*#__PURE__*/React.createElement(LedgerCard, {
     style: {
       padding: 16,
       borderLeft: `4px solid ${THEME.red}`
@@ -812,7 +1309,7 @@ function Dashboard({
     style: {
       fontWeight: 700
     }
-  }, p.stock, " sisa")))), /*#__PURE__*/React.createElement("button", {
+  }, p.stock, " ", p.sellUnit)))), /*#__PURE__*/React.createElement("button", {
     onClick: onGoStok,
     style: {
       marginTop: 8,
@@ -872,11 +1369,15 @@ function Dashboard({
 }
 function TxRow({
   tx,
-  onDelete
+  onDelete,
+  showWhatsApp
 }) {
   return /*#__PURE__*/React.createElement(LedgerCard, {
     style: {
-      padding: 14,
+      padding: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
       display: "flex",
       alignItems: "center",
       justifyContent: "space-between"
@@ -900,7 +1401,13 @@ function TxRow({
       color: THEME.goldDark,
       margin: "2px 0 0"
     }
-  }, "Pemesan: ", tx.customer)), /*#__PURE__*/React.createElement("div", {
+  }, "Pemesan: ", tx.customer), tx.recordedByEmail && /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: THEME.muted,
+      margin: "2px 0 0"
+    }
+  }, "Dicatat oleh: ", tx.recordedByEmail)), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -934,12 +1441,28 @@ function TxRow({
       color: THEME.muted,
       cursor: "pointer"
     }
-  }, "🗑️")));
+  }, "🗑️"))), showWhatsApp && /*#__PURE__*/React.createElement("button", {
+    onClick: () => shareReceiptWhatsApp(tx),
+    style: {
+      marginTop: 8,
+      fontSize: 12,
+      fontWeight: 600,
+      padding: "6px 10px",
+      borderRadius: 10,
+      border: "none",
+      background: "#25D366",
+      color: "white",
+      cursor: "pointer"
+    }
+  }, "Kirim struk via WhatsApp"));
 }
 function StokTab({
   products,
   search,
   setSearch,
+  categories,
+  categoryFilter,
+  setCategoryFilter,
   onAdd,
   onEdit,
   onDelete
@@ -995,7 +1518,28 @@ function StokTab({
       cursor: "pointer",
       flexShrink: 0
     }
-  }, "+")), products.length === 0 ? /*#__PURE__*/React.createElement(LedgerCard, {
+  }, "+")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      overflowX: "auto",
+      paddingBottom: 2
+    }
+  }, categories.map(c => /*#__PURE__*/React.createElement("button", {
+    key: c,
+    onClick: () => setCategoryFilter(c),
+    style: {
+      flexShrink: 0,
+      fontSize: 12,
+      fontWeight: 600,
+      padding: "6px 12px",
+      borderRadius: 999,
+      border: `1px solid ${THEME.line}`,
+      background: categoryFilter === c ? THEME.ink : THEME.card,
+      color: categoryFilter === c ? "white" : THEME.muted,
+      cursor: "pointer"
+    }
+  }, c))), products.length === 0 ? /*#__PURE__*/React.createElement(LedgerCard, {
     style: {
       padding: 24,
       textAlign: "center",
@@ -1022,7 +1566,8 @@ function StokTab({
     }
   }, products.map(p => {
     const low = p.stock <= LOW_STOCK;
-    const margin = p.sellPrice - p.buyPrice;
+    const costPerUnit = p.buyPrice / (p.unitsPerBuy || 1);
+    const margin = p.sellPrice - costPerUnit;
     return /*#__PURE__*/React.createElement(LedgerCard, {
       key: p.id,
       style: {
@@ -1039,6 +1584,12 @@ function StokTab({
         flex: 1,
         minWidth: 0
       }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 6
+      }
     }, /*#__PURE__*/React.createElement("p", {
       style: {
         fontSize: 14,
@@ -1049,20 +1600,30 @@ function StokTab({
         textOverflow: "ellipsis",
         whiteSpace: "nowrap"
       }
-    }, p.name), /*#__PURE__*/React.createElement("p", {
+    }, p.name), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 10,
+        fontWeight: 600,
+        padding: "2px 6px",
+        borderRadius: 6,
+        background: THEME.paper,
+        color: THEME.muted,
+        flexShrink: 0
+      }
+    }, p.category)), /*#__PURE__*/React.createElement("p", {
       style: {
         fontSize: 12,
         marginTop: 2,
         color: THEME.muted,
         margin: "2px 0 0"
       }
-    }, "Beli ", money(p.buyPrice), " → Jual ", money(p.sellPrice)), /*#__PURE__*/React.createElement("p", {
+    }, "Beli ", money(p.buyPrice), "/", p.buyUnit, " (", p.unitsPerBuy, " ", p.sellUnit, ") → Jual ", money(p.sellPrice), "/", p.sellUnit), /*#__PURE__*/React.createElement("p", {
       style: {
         fontSize: 12,
         color: THEME.goldDark,
         margin: 0
       }
-    }, "Margin ", money(margin), " / pcs")), /*#__PURE__*/React.createElement("div", {
+    }, "Margin ", money(margin), " / ", p.sellUnit)), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         flexDirection: "column",
@@ -1081,7 +1642,7 @@ function StokTab({
         background: low ? THEME.redSoft : THEME.paper,
         color: low ? THEME.red : THEME.ink
       }
-    }, p.stock, " stok"), /*#__PURE__*/React.createElement("div", {
+    }, p.stock, " ", p.sellUnit), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         gap: 4
@@ -1122,7 +1683,9 @@ function TransaksiTab({
   previewTotal,
   previewProfit,
   onSubmit,
-  onGoStok
+  onGoStok,
+  lastTx,
+  onClearLastTx
 }) {
   if (allEmpty) {
     return /*#__PURE__*/React.createElement(LedgerCard, {
@@ -1158,29 +1721,57 @@ function TransaksiTab({
       }
     }, "Ke tab Stok"));
   }
-  if (products.length === 0) {
-    return /*#__PURE__*/React.createElement(LedgerCard, {
-      style: {
-        padding: 24,
-        textAlign: "center",
-        marginTop: 8
-      }
-    }, /*#__PURE__*/React.createElement("p", {
-      style: {
-        fontSize: 14,
-        fontWeight: 600,
-        color: THEME.ink,
-        margin: "0 0 4px"
-      }
-    }, "Semua produk stoknya habis"), /*#__PURE__*/React.createElement("p", {
-      style: {
-        fontSize: 12,
-        color: THEME.muted,
-        margin: 0
-      }
-    }, "Tambah stok dulu sebelum mencatat penjualan."));
-  }
-  return /*#__PURE__*/React.createElement(LedgerCard, {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 12
+    }
+  }, lastTx && /*#__PURE__*/React.createElement(LedgerCard, {
+    style: {
+      padding: 14,
+      borderLeft: `4px solid ${THEME.gold}`
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600,
+      color: THEME.ink,
+      margin: "0 0 8px"
+    }
+  }, "✓ Transaksi terakhir tersimpan"), /*#__PURE__*/React.createElement(TxRow, {
+    tx: lastTx,
+    showWhatsApp: true
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: onClearLastTx,
+    style: {
+      marginTop: 8,
+      fontSize: 12,
+      background: "none",
+      border: "none",
+      color: THEME.muted,
+      cursor: "pointer",
+      padding: 0
+    }
+  }, "Tutup")), products.length === 0 ? /*#__PURE__*/React.createElement(LedgerCard, {
+    style: {
+      padding: 24,
+      textAlign: "center"
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 14,
+      fontWeight: 600,
+      color: THEME.ink,
+      margin: "0 0 4px"
+    }
+  }, "Semua produk stoknya habis"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12,
+      color: THEME.muted,
+      margin: 0
+    }
+  }, "Tambah stok dulu sebelum mencatat penjualan.")) : /*#__PURE__*/React.createElement(LedgerCard, {
     style: {
       padding: 16
     }
@@ -1217,7 +1808,7 @@ function TransaksiTab({
   }, "Pilih produk…"), products.map(p => /*#__PURE__*/React.createElement("option", {
     key: p.id,
     value: p.id
-  }, p.name, " (stok ", p.stock, ")"))), /*#__PURE__*/React.createElement("label", {
+  }, p.name, " (stok ", p.stock, " ", p.sellUnit, ")"))), /*#__PURE__*/React.createElement("label", {
     style: {
       fontSize: 12,
       fontWeight: 500,
@@ -1323,12 +1914,49 @@ function TransaksiTab({
       color: "white",
       cursor: "pointer"
     }
-  }, "Simpan Transaksi"));
+  }, "Simpan Transaksi")));
 }
 function RiwayatTab({
   transactions,
+  staffReport,
   onDelete
 }) {
+  const [q, setQ] = useState("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const filtered = transactions.filter(t => {
+    const matchQ = !q || t.productName.toLowerCase().includes(q.toLowerCase()) || (t.customer || "").toLowerCase().includes(q.toLowerCase());
+    const d = dayKey(t.date);
+    const matchFrom = !from || d >= from;
+    const matchTo = !to || d <= to;
+    return matchQ && matchFrom && matchTo;
+  });
+  function exportExcel() {
+    const rows = filtered.map(t => ({
+      Tanggal: fmtDate(t.date),
+      Jam: fmtTime(t.date),
+      Produk: t.productName,
+      Pemesan: t.customer || "-",
+      Jumlah: t.qty,
+      HargaJual: t.sellPrice,
+      Total: t.total,
+      Keuntungan: t.profit,
+      DicatatOleh: t.recordedByEmail || "-"
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Riwayat");
+    XLSX.writeFile(wb, `riwayat-transaksi-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  }
+  const inputStyle = {
+    padding: "8px 10px",
+    borderRadius: 10,
+    fontSize: 12,
+    background: THEME.paper,
+    border: `1px solid ${THEME.line}`,
+    color: THEME.text,
+    outline: "none"
+  };
   if (transactions.length === 0) {
     return /*#__PURE__*/React.createElement(LedgerCard, {
       style: {
@@ -1349,20 +1977,108 @@ function RiwayatTab({
     style: {
       display: "flex",
       flexDirection: "column",
-      gap: 8
+      gap: 10
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement(LedgerCard, {
+    style: {
+      padding: 12
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    value: q,
+    onChange: e => setQ(e.target.value),
+    placeholder: "Cari produk / pemesan…",
+    style: {
+      ...inputStyle,
+      width: "100%",
+      marginBottom: 8
+    }
+  }), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
-      justifyContent: "flex-end",
+      gap: 8,
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    value: from,
+    onChange: e => setFrom(e.target.value),
+    style: {
+      ...inputStyle,
+      flex: 1
+    }
+  }), /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    value: to,
+    onChange: e => setTo(e.target.value),
+    style: {
+      ...inputStyle,
+      flex: 1
+    }
+  })), /*#__PURE__*/React.createElement("button", {
+    onClick: exportExcel,
+    style: {
+      width: "100%",
+      fontSize: 12,
+      fontWeight: 600,
+      padding: "8px 10px",
+      borderRadius: 10,
+      border: "none",
+      background: THEME.ink,
+      color: "white",
+      cursor: "pointer"
+    }
+  }, "⬇ Export ke Excel (", filtered.length, " transaksi)")), staffReport.length > 1 && /*#__PURE__*/React.createElement(LedgerCard, {
+    style: {
+      padding: 14
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600,
+      color: THEME.ink,
+      margin: "0 0 8px"
+    }
+  }, "Laporan per staf"), staffReport.map(s => /*#__PURE__*/React.createElement("div", {
+    key: s.email,
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      fontSize: 12,
       marginBottom: 4
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: THEME.muted
+    }
+  }, s.email, " · ", s.count, "x"), /*#__PURE__*/React.createElement("span", {
+    className: "font-ledger",
+    style: {
+      fontWeight: 700,
+      color: THEME.goldDark
+    }
+  }, money(s.profit))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "flex-end"
     }
   }, /*#__PURE__*/React.createElement(Stamp, {
     text: "RIWAYAT"
-  })), transactions.map(t => /*#__PURE__*/React.createElement(TxRow, {
+  })), filtered.length === 0 ? /*#__PURE__*/React.createElement(LedgerCard, {
+    style: {
+      padding: 20,
+      textAlign: "center"
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: THEME.muted,
+      margin: 0
+    }
+  }, "Tidak ada transaksi yang cocok dengan filter.")) : filtered.map(t => /*#__PURE__*/React.createElement(TxRow, {
     key: t.id,
     tx: t,
-    onDelete: () => onDelete(t)
+    onDelete: () => onDelete(t),
+    showWhatsApp: true
   })));
 }
 function ProductModal({
@@ -1371,9 +2087,13 @@ function ProductModal({
   onSave
 }) {
   const [name, setName] = useState(initial?.name || "");
+  const [category, setCategory] = useState(initial?.category || "Umum");
   const [buyPrice, setBuyPrice] = useState(initial?.buyPrice?.toString() || "");
   const [sellPrice, setSellPrice] = useState(initial?.sellPrice?.toString() || "");
   const [stock, setStock] = useState(initial?.stock?.toString() || "");
+  const [buyUnit, setBuyUnit] = useState(initial?.buyUnit || "pcs");
+  const [sellUnit, setSellUnit] = useState(initial?.sellUnit || "pcs");
+  const [unitsPerBuy, setUnitsPerBuy] = useState(initial?.unitsPerBuy?.toString() || "1");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   async function submit() {
@@ -1381,16 +2101,22 @@ function ProductModal({
     const bp = parseFloat(buyPrice);
     const sp = parseFloat(sellPrice);
     const st = parseInt(stock, 10);
+    const upb = parseFloat(unitsPerBuy);
     if (isNaN(bp) || bp < 0) return setError("Harga beli tidak valid.");
     if (isNaN(sp) || sp < 0) return setError("Harga jual tidak valid.");
     if (isNaN(st) || st < 0) return setError("Jumlah stok tidak valid.");
+    if (isNaN(upb) || upb <= 0) return setError("Isi per satuan beli tidak valid.");
     setSaving(true);
     await onSave({
       id: initial?.id,
       name: name.trim(),
+      category: category.trim() || "Umum",
       buyPrice: bp,
       sellPrice: sp,
-      stock: st
+      stock: st,
+      buyUnit: buyUnit.trim() || "pcs",
+      sellUnit: sellUnit.trim() || "pcs",
+      unitsPerBuy: upb
     });
     setSaving(false);
   }
@@ -1427,6 +2153,8 @@ function ProductModal({
     style: {
       width: "100%",
       maxWidth: 480,
+      maxHeight: "88vh",
+      overflowY: "auto",
       borderTopLeftRadius: 24,
       borderTopRightRadius: 24,
       padding: "20px 20px 28px",
@@ -1465,6 +2193,59 @@ function ProductModal({
       ...inputStyle,
       marginBottom: 12
     }
+  }), /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "Kategori"), /*#__PURE__*/React.createElement("input", {
+    value: category,
+    onChange: e => setCategory(e.target.value),
+    placeholder: "Contoh: Makanan, Minuman",
+    list: "category-suggestions",
+    style: {
+      ...inputStyle,
+      marginBottom: 12
+    }
+  }), /*#__PURE__*/React.createElement("datalist", {
+    id: "category-suggestions"
+  }, /*#__PURE__*/React.createElement("option", {
+    value: "Makanan"
+  }), /*#__PURE__*/React.createElement("option", {
+    value: "Minuman"
+  }), /*#__PURE__*/React.createElement("option", {
+    value: "Rumah Tangga"
+  }), /*#__PURE__*/React.createElement("option", {
+    value: "Umum"
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 12,
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "Satuan beli"), /*#__PURE__*/React.createElement("input", {
+    value: buyUnit,
+    onChange: e => setBuyUnit(e.target.value),
+    placeholder: "dus / pcs",
+    style: inputStyle
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "Satuan jual"), /*#__PURE__*/React.createElement("input", {
+    value: sellUnit,
+    onChange: e => setSellUnit(e.target.value),
+    placeholder: "pcs",
+    style: inputStyle
+  }))), /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "Isi per satuan beli (berapa ", sellUnit, " dalam 1 ", buyUnit, ")"), /*#__PURE__*/React.createElement("input", {
+    type: "number",
+    value: unitsPerBuy,
+    onChange: e => setUnitsPerBuy(e.target.value),
+    className: "font-ledger",
+    style: {
+      ...inputStyle,
+      marginBottom: 12
+    }
   }), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
@@ -1474,7 +2255,7 @@ function ProductModal({
     }
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     style: labelStyle
-  }, "Harga beli"), /*#__PURE__*/React.createElement("input", {
+  }, "Harga beli / ", buyUnit), /*#__PURE__*/React.createElement("input", {
     type: "number",
     value: buyPrice,
     onChange: e => setBuyPrice(e.target.value),
@@ -1483,7 +2264,7 @@ function ProductModal({
     style: inputStyle
   })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     style: labelStyle
-  }, "Harga jual"), /*#__PURE__*/React.createElement("input", {
+  }, "Harga jual / ", sellUnit), /*#__PURE__*/React.createElement("input", {
     type: "number",
     value: sellPrice,
     onChange: e => setSellPrice(e.target.value),
@@ -1492,7 +2273,7 @@ function ProductModal({
     style: inputStyle
   }))), /*#__PURE__*/React.createElement("label", {
     style: labelStyle
-  }, "Jumlah stok"), /*#__PURE__*/React.createElement("input", {
+  }, "Jumlah stok (dalam ", sellUnit, ")"), /*#__PURE__*/React.createElement("input", {
     type: "number",
     value: stock,
     onChange: e => setStock(e.target.value),
@@ -1608,9 +2389,11 @@ function ConfirmModal({
   }, busy ? "Menghapus…" : "Hapus"))));
 }
 
-/* =================== APLIKASI STAF (role: user) — cuma bisa catat jual =================== */
+/* =================== APLIKASI STAF (role: user) =================== */
 function StaffApp({
-  session
+  session,
+  dark,
+  onToggleDark
 }) {
   const [products, setProducts] = useState([]);
   const [loadingData, setLoadingData] = useState(true);
@@ -1618,7 +2401,7 @@ function StaffApp({
   const [saleQty, setSaleQty] = useState("1");
   const [saleCustomer, setSaleCustomer] = useState("");
   const [saleError, setSaleError] = useState("");
-  const [successMsg, setSuccessMsg] = useState("");
+  const [lastTx, setLastTx] = useState(null);
   const loadProducts = useCallback(async () => {
     setLoadingData(true);
     const {
@@ -1637,11 +2420,12 @@ function StaffApp({
   const previewTotal = selectedProduct ? selectedProduct.sellPrice * qtyNum : 0;
   async function submit() {
     setSaleError("");
-    setSuccessMsg("");
+    setLastTx(null);
     if (!selectedProduct) return setSaleError("Pilih produk dulu.");
     if (qtyNum <= 0) return setSaleError("Jumlah harus lebih dari 0.");
     if (qtyNum > selectedProduct.stock) return setSaleError(`Stok tidak cukup. Sisa stok: ${selectedProduct.stock}.`);
     const {
+      data,
       error
     } = await supabaseClient.rpc("record_sale", {
       p_id: uid(),
@@ -1650,7 +2434,8 @@ function StaffApp({
       p_customer: saleCustomer.trim() || null
     });
     if (error) return setSaleError(error.message || "Gagal menyimpan transaksi.");
-    setSuccessMsg(`Transaksi tersimpan: ${selectedProduct.name} x${qtyNum}`);
+    const row = data && data[0];
+    if (row) setLastTx(txFromDb(row));
     await loadProducts();
     setSaleProductId("");
     setSaleQty("1");
@@ -1681,73 +2466,53 @@ function StaffApp({
       display: "flex",
       flexDirection: "column"
     }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: "24px 20px 20px",
-      borderBottomLeftRadius: 24,
-      borderBottomRightRadius: 24,
-      boxShadow: "0 4px 10px rgba(0,0,0,0.08)",
-      background: `linear-gradient(160deg, ${THEME.ink}, ${THEME.inkDark})`
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 8
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      width: 36,
-      height: 36,
-      borderRadius: 10,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      background: "rgba(255,255,255,0.12)",
-      color: THEME.gold,
-      fontSize: 18
-    }
-  }, "🧾"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h1", {
-    style: {
-      fontSize: 18,
-      fontWeight: 700,
-      color: "white",
-      margin: 0,
-      lineHeight: 1.2
-    }
-  }, "Catat Penjualan"), /*#__PURE__*/React.createElement("p", {
-    style: {
-      fontSize: 12,
-      color: "rgba(255,255,255,0.6)",
-      margin: 0
-    }
-  }, session.user.email))), /*#__PURE__*/React.createElement("button", {
-    onClick: () => supabaseClient.auth.signOut(),
-    style: {
-      background: "rgba(255,255,255,0.12)",
-      border: "none",
-      color: "white",
-      fontSize: 12,
-      fontWeight: 500,
-      padding: "8px 12px",
-      borderRadius: 10,
-      cursor: "pointer"
-    }
-  }, "Keluar"))), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement(HeaderBar, {
+    title: "Catat Penjualan",
+    subtitle: session.user.email,
+    icon: "🧾",
+    dark: dark,
+    onToggleDark: onToggleDark,
+    onLogout: () => supabaseClient.auth.signOut()
+  }), /*#__PURE__*/React.createElement("div", {
     style: {
       flex: 1,
       padding: "16px 20px 40px",
       overflowY: "auto",
       display: "flex",
-      flexDirection: "column"
+      flexDirection: "column",
+      gap: 12
     }
-  }, loadingData ? /*#__PURE__*/React.createElement("p", {
+  }, lastTx && /*#__PURE__*/React.createElement(LedgerCard, {
+    style: {
+      padding: 14,
+      borderLeft: `4px solid ${THEME.gold}`
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600,
+      color: THEME.ink,
+      margin: "0 0 8px"
+    }
+  }, "✓ Transaksi tersimpan"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: THEME.text,
+      margin: "0 0 4px"
+    }
+  }, lastTx.productName, " x", lastTx.qty, " — ", money(lastTx.total)), /*#__PURE__*/React.createElement("button", {
+    onClick: () => shareReceiptWhatsApp(lastTx),
+    style: {
+      fontSize: 12,
+      fontWeight: 600,
+      padding: "6px 10px",
+      borderRadius: 10,
+      border: "none",
+      background: "#25D366",
+      color: "white",
+      cursor: "pointer"
+    }
+  }, "Kirim struk via WhatsApp")), loadingData ? /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 14,
       color: THEME.muted,
@@ -1757,8 +2522,7 @@ function StaffApp({
   }, "Memuat produk…") : sellableProducts.length === 0 ? /*#__PURE__*/React.createElement(LedgerCard, {
     style: {
       padding: 24,
-      textAlign: "center",
-      marginTop: 8
+      textAlign: "center"
     }
   }, /*#__PURE__*/React.createElement("p", {
     style: {
@@ -1781,10 +2545,7 @@ function StaffApp({
     style: labelStyle
   }, "Produk"), /*#__PURE__*/React.createElement("select", {
     value: saleProductId,
-    onChange: e => {
-      setSaleProductId(e.target.value);
-      setSuccessMsg("");
-    },
+    onChange: e => setSaleProductId(e.target.value),
     style: {
       ...inputStyle,
       marginBottom: 12
@@ -1794,7 +2555,7 @@ function StaffApp({
   }, "Pilih produk…"), sellableProducts.map(p => /*#__PURE__*/React.createElement("option", {
     key: p.id,
     value: p.id
-  }, p.name, " (stok ", p.stock, ")"))), /*#__PURE__*/React.createElement("label", {
+  }, p.name, " (stok ", p.stock, " ", p.sellUnit, ")"))), /*#__PURE__*/React.createElement("label", {
     style: labelStyle
   }, "Jumlah terjual"), /*#__PURE__*/React.createElement("input", {
     type: "number",
@@ -1846,14 +2607,7 @@ function StaffApp({
       marginBottom: 12,
       color: THEME.red
     }
-  }, saleError), successMsg && /*#__PURE__*/React.createElement("p", {
-    style: {
-      fontSize: 12,
-      fontWeight: 600,
-      marginBottom: 12,
-      color: THEME.goldDark
-    }
-  }, "✓ ", successMsg), /*#__PURE__*/React.createElement("button", {
+  }, saleError), /*#__PURE__*/React.createElement("button", {
     onClick: submit,
     style: {
       width: "100%",
@@ -1868,8 +2622,6 @@ function StaffApp({
     }
   }, "Simpan Transaksi"))));
 }
-
-/* =================== Layar saat akun belum diberi peran oleh admin =================== */
 function NeedsSetupScreen({
   email
 }) {
@@ -1916,11 +2668,20 @@ function NeedsSetupScreen({
   }, "Keluar")));
 }
 
-/* =================== ROOT: cek sesi login =================== */
+/* =================== ROOT =================== */
 function Root() {
-  const [session, setSession] = useState(undefined); // undefined = belum dicek, null = belum login
-  const [profile, setProfile] = useState(undefined); // undefined = belum dicek, null = tidak ditemukan
-
+  const [session, setSession] = useState(undefined);
+  const [profile, setProfile] = useState(undefined);
+  const [recovery, setRecovery] = useState(false);
+  const [dark, setDark] = useState(initialDark);
+  const [, forceTick] = useState(0);
+  function toggleDark() {
+    const next = !dark;
+    applyTheme(next);
+    localStorage.setItem("buku_untung_dark", next ? "1" : "0");
+    setDark(next);
+    forceTick(n => n + 1);
+  }
   useEffect(() => {
     if (!isConfigured) return;
     supabaseClient.auth.getSession().then(({
@@ -1928,7 +2689,8 @@ function Root() {
     }) => setSession(data.session));
     const {
       data: sub
-    } = supabaseClient.auth.onAuthStateChange((_event, s) => {
+    } = supabaseClient.auth.onAuthStateChange((event, s) => {
+      if (event === "PASSWORD_RECOVERY") setRecovery(true);
       setSession(s);
       setProfile(undefined);
     });
@@ -1944,6 +2706,9 @@ function Root() {
     })();
   }, [session]);
   if (!isConfigured) return /*#__PURE__*/React.createElement(SetupNotice, null);
+  if (recovery) return /*#__PURE__*/React.createElement(ResetPasswordScreen, {
+    onDone: () => setRecovery(false)
+  });
   if (session === undefined) {
     return /*#__PURE__*/React.createElement("div", {
       style: {
@@ -1975,9 +2740,13 @@ function Root() {
     email: session.user.email
   });
   return profile.role === "admin" ? /*#__PURE__*/React.createElement(MainApp, {
-    session: session
+    session: session,
+    dark: dark,
+    onToggleDark: toggleDark
   }) : /*#__PURE__*/React.createElement(StaffApp, {
-    session: session
+    session: session,
+    dark: dark,
+    onToggleDark: toggleDark
   });
 }
 ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/React.createElement(Root, null));
