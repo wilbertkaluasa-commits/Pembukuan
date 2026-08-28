@@ -264,8 +264,7 @@ function HeaderBar({
 
 /* =================== Struk WhatsApp ===================*/
 function buildReceiptText(tx) {
-  return ["*Struk Pembelian*", `Produk: ${tx.productName}`, `Jumlah: ${tx.qty}`, `Total: ${money(tx.total)}`, `Tanggal: ${fmtDate(tx.date)} ${fmtTime(tx.date)}`, "", "Terima kasih sudah berbelanja!"].join("
-");
+  return ["*Struk Pembelian*", `Produk: ${tx.productName}`, `Jumlah: ${tx.qty}`, `Total: ${money(tx.total)}`, `Tanggal: ${fmtDate(tx.date)} ${fmtTime(tx.date)}`, "", "Terima kasih sudah berbelanja!"].join("\n");
 }
 function shareReceiptWhatsApp(tx) {
   const url = "https://wa.me/?text=" + encodeURIComponent(buildReceiptText(tx));
